@@ -34,8 +34,13 @@ def _class_id(file_path: str, class_name: str) -> str:
     return hashlib.md5(f"{file_path}::{class_name}".encode()).hexdigest()[:12]
 
 
+def _folder_id(path: str) -> str:
+    return hashlib.md5(path.encode()).hexdigest()[:12]
+
+
 def _edge_id(from_id: str, rel: str, to_id: str) -> str:
     return hashlib.md5(f"{from_id}->{rel}->{to_id}".encode()).hexdigest()[:12]
+
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +78,19 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
     await db.query(
         "UPSERT type::record('file', $id) SET path = $path, line_count = $lc, language = 'python'",
         {"id": fid, "path": path, "lc": parsed["line_count"]},
+    )
+
+    # Upsert parent folder node + in_folder edge
+    folder_path = os.path.dirname(path)
+    folderid = _folder_id(folder_path)
+    await db.query(
+        "UPSERT type::record('folder', $id) SET path = $path",
+        {"id": folderid, "path": folder_path},
+    )
+    eid = _edge_id(fid, "in_folder", folderid)
+    await db.query(
+        "INSERT RELATION INTO in_folder { id: type::record('in_folder', $eid), in: type::record('file', $fid), out: type::record('folder', $folderid) } ON DUPLICATE KEY UPDATE in = in",
+        {"eid": eid, "fid": fid, "folderid": folderid},
     )
 
     fn_count = 0

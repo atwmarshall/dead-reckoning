@@ -160,4 +160,4 @@ see .env.example
 
 ---
 
-*LangChain × SurrealDB London Hackathon — March 2025*
+*LangChain × SurrealDB London Hackathon — March 2026*
