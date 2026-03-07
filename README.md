@@ -57,7 +57,7 @@ cd dead-reckoning
 uv sync
 
 # 2. Pull Ollama models
-ollama pull gemma3:4b        # LLM for dev/testing
+ollama pull llama3.2:3b       # LLM for dev/testing
 ollama pull nomic-embed-text # embeddings
 
 # 3. Configure environment
@@ -66,7 +66,7 @@ cp .env.example .env
 
 # 4. Apply SurrealDB schema (one-time setup)
 surreal import --conn $SURREALDB_URL --user $SURREALDB_USER \
-  --pass $SURREALDB_PASS --ns hackathon --db deadreckoning \
+  --pass $SURREALDB_PASS --ns $SURREALDB_NS --db $SURREALDB_DB \
   ingestion/schema.surql
 
 # 5. Ingest a repo
@@ -145,24 +145,7 @@ dead-reckoning/
 
 ## Environment variables
 
-```bash
-# SurrealDB (get from surrealdb.com/cloud)
-SURREALDB_URL=wss://your-instance.surrealdb.net/rpc
-SURREALDB_USER=root
-SURREALDB_PASS=your_password
-SURREALDB_NS=hackathon
-SURREALDB_DB=deadreckoning
-
-# Ollama (must be running locally — ollama.com)
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=gemma3:4b           # swap to gemma3:27b for demo day
-OLLAMA_EMBED_MODEL=nomic-embed-text
-
-# LangSmith (get from smith.langchain.com)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=ls__...
-LANGCHAIN_PROJECT=dead-reckoning
-```
+see .env.example
 
 ---
 

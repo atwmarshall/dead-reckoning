@@ -16,7 +16,7 @@ SCHEMA_PATH = Path(__file__).parent.parent / "ingestion" / "schema.surql"
 DEMO_REPO = "/tmp/demo-repo"
 
 # All tables to wipe — knowledge graph + LangGraph checkpoint tables
-ALL_TABLES = ["file", "function", "class", "contains", "imports", "calls", "inherits", "checkpoint", "`write`"]
+ALL_TABLES = ["file", "`function`", "`class`", "contains", "imports", "calls", "inherits", "checkpoint", "`write`"]
 
 
 async def reset_database() -> None:
@@ -37,7 +37,10 @@ async def reset_database() -> None:
     print(f"Wiped {len(ALL_TABLES)} tables.")
 
     schema = SCHEMA_PATH.read_text()
-    await db.query(schema)
+    for stmt in schema.split(";"):
+        stmt = stmt.strip()
+        if stmt and not stmt.startswith("--"):
+            await db.query(stmt)
     print("Schema applied.")
 
     await db.close()
@@ -47,12 +50,12 @@ async def verify_counts() -> dict:
     """Query DB for final node counts."""
     async with get_db_client() as db:
         file_res = await db.query("SELECT count() FROM file GROUP ALL")
-        fn_res = await db.query("SELECT count() FROM function GROUP ALL")
-        cls_res = await db.query("SELECT count() FROM class GROUP ALL")
+        fn_res = await db.query("SELECT count() FROM `function` GROUP ALL")
+        cls_res = await db.query("SELECT count() FROM `class` GROUP ALL")
 
     def _count(res):
         try:
-            return res[0]["result"][0]["count"]
+            return res[0]["count"]
         except (IndexError, KeyError, TypeError):
             return 0
 
