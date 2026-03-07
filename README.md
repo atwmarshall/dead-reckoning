@@ -66,9 +66,7 @@ cp .env.example .env
 # Edit .env — fill in SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, LANGCHAIN_API_KEY
 
 # 4. Apply SurrealDB schema (one-time setup)
-surreal import --conn $SURREALDB_URL --user $SURREALDB_USER \
-  --pass $SURREALDB_PASS --ns $SURREALDB_NS --db $SURREALDB_DB \
-  ingestion/schema.surql
+uv run python ingestion/apply_schema.py
 
 # 5. Ingest a repo
 uv run python ingestion/seed.py --repo /path/to/any/python/repo
