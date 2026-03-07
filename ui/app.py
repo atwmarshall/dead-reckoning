@@ -16,6 +16,7 @@ FOLDER_COLOR = "#F39C12"  # orange
 FILE_COLOR = "#4C8BF5"   # blue
 FUNC_COLOR = "#9B59B6"   # purple
 CLASS_COLOR = "#27AE60"  # green
+CALLS_EDGE_COLOR = "#E67E22"  # dark orange
 
 
 # ── Background ingestion thread ────────────────────────────────────────────
@@ -78,7 +79,8 @@ def _fetch_graph_data() -> tuple:
             contains_edges = await db.query("SELECT in, out FROM contains LIMIT 5000")
             folder_edges = await db.query("SELECT in, out FROM in_folder LIMIT 5000")
             repo_edges = await db.query("SELECT in, out FROM in_repo LIMIT 5000")
-        return repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges
+            calls_edges = await db.query("SELECT in, out FROM calls LIMIT 5000")
+        return repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges, calls_edges
 
     return asyncio.run(_query())
 
@@ -92,7 +94,7 @@ def _get_rows(result) -> list:
     return []
 
 
-def _build_agraph(repos, folders, files, fns, classes, contains_raw, folder_edges_raw, repo_edges_raw) -> tuple[list, list]:
+def _build_agraph(repos, folders, files, fns, classes, contains_raw, folder_edges_raw, repo_edges_raw, calls_raw) -> tuple[list, list]:
     nodes: list[Node] = []
     edges: list[Edge] = []
     seen: set[str] = set()
@@ -149,6 +151,12 @@ def _build_agraph(repos, folders, files, fns, classes, contains_raw, folder_edge
         dst = str(row.get("out", ""))
         if src and dst and src in seen and dst in seen:
             edges.append(Edge(source=src, target=dst))
+
+    for row in _get_rows(calls_raw):
+        src = str(row.get("in", ""))
+        dst = str(row.get("out", ""))
+        if src and dst and src in seen and dst in seen:
+            edges.append(Edge(source=src, target=dst, color=CALLS_EDGE_COLOR))
 
     return nodes, edges
 
@@ -265,7 +273,7 @@ with st.sidebar:
         st.caption("Ready. Enter a repo path and click **Ingest**.")
 
     st.divider()
-    st.caption("🔴 repo  🟠 folder  🔵 file  🟣 function  🟢 class")
+    st.caption("🔴 repo  🟠 folder  🔵 file  🟣 function  🟢 class  🟠→ calls")
 
 
 # ── Main tabs ──────────────────────────────────────────────────────────────
@@ -277,8 +285,8 @@ with tab_graph:
     if st.button("Refresh graph", type="primary"):
         try:
             with st.spinner("Loading graph from SurrealDB…"):
-                repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges = _fetch_graph_data()
-            nodes, edges = _build_agraph(repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges)
+                repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges, calls_edges = _fetch_graph_data()
+            nodes, edges = _build_agraph(repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges, calls_edges)
             st.session_state["graph_nodes"] = nodes
             st.session_state["graph_edges"] = edges
             st.session_state.pop("graph_error", None)
