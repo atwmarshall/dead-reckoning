@@ -226,12 +226,10 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
                 {"class_names": class_names, "file_paths": file_paths},
             ))
 
-        file_ids = [str(r["id"]) for r in file_rows if r.get("id")]
-
         contains_rows = _get_rows(await db.query(
-            "SELECT in, out FROM contains WHERE in IN $file_ids",
-            {"file_ids": file_ids},
-        )) if file_ids else []
+            "SELECT in, out FROM contains WHERE in.path IN $file_paths",
+            {"file_paths": file_paths},
+        )) if file_paths else []
 
         hop_fn_rows: list[dict] = []
         hop_class_rows: list[dict] = []
@@ -261,9 +259,8 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
         label = str(row.get("name", ""))
         if nid and nid not in seen:
             nodes.append(Node(
-                id=nid, label=label,
-                color={"background": FUNC_COLOR, "border": "#FFD700"},
-                size=14, borderWidth=3,
+                id=nid, label=label, color=FUNC_COLOR, size=20,
+                font={"color": "#FFD700", "size": 14, "strokeWidth": 3, "strokeColor": "#000000"},
             ))
             seen.add(nid)
 
@@ -272,9 +269,8 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
         label = str(row.get("name", ""))
         if nid and nid not in seen:
             nodes.append(Node(
-                id=nid, label=label,
-                color={"background": CLASS_COLOR, "border": "#FFD700"},
-                size=16, borderWidth=3,
+                id=nid, label=label, color=CLASS_COLOR, size=22,
+                font={"color": "#FFD700", "size": 14, "strokeWidth": 3, "strokeColor": "#000000"},
             ))
             seen.add(nid)
 

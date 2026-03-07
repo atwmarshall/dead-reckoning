@@ -15,12 +15,9 @@ load_dotenv()
 TOOLS = [hybrid_search]
 
 SYSTEM_PROMPT = (
-    "You are a codebase assistant. You have one tool: hybrid_search. "
-    "For every question, call hybrid_search with the key term from the user's question. "
-    "Answer strictly using what the tool returns — do not use prior knowledge or training data. "
-    "Each result contains: function name, file path, documentation status, parent class, sibling methods, and an optional summary. "
-    "If a result is marked undocumented, say so and describe only what the class, siblings, and file path imply. "
-    "If hybrid_search returns no relevant results, say so. Never call hybrid_search more than twice."
+    "You are a codebase assistant. "
+    "Always call hybrid_search before answering. "
+    "Answer only from the tool results — never from prior knowledge."
 )
 
 
