@@ -108,19 +108,23 @@ async def finalize_ingestion(
     file_count: int,
     content_hash: str | None = None,
 ) -> None:
-    """Mark an ingestion record as done."""
+    """Mark an ingestion record as done and record the snapshot path if it exists."""
+    from ingestion.snapshot import SNAPSHOT_DIR
+
     iid_part = ingestion_id.split(":", 1)[1] if ":" in ingestion_id else ingestion_id
+    snap_path = SNAPSHOT_DIR / f"{iid_part}.tar"
+    snap_str = str(snap_path) if snap_path.exists() else None
     await db.query(
         """UPDATE type::record('ingestion', $iid) SET
-           status = 'done', file_count = $fc, content_hash = $ch""",
-        {"iid": iid_part, "fc": file_count, "ch": content_hash},
+           status = 'done', file_count = $fc, content_hash = $ch, snapshot_path = $sp""",
+        {"iid": iid_part, "fc": file_count, "ch": content_hash, "sp": snap_str},
     )
 
 
 async def get_ingestions_for_repo(db: AsyncSurreal, repo_path: str) -> list[dict]:
     """Return all ingestion records for a repo, newest first."""
     rows = _get_rows(await db.query(
-        "SELECT id, repo_name, repo_path, github_url, ingested_at, status, file_count "
+        "SELECT id, repo_name, repo_path, github_url, ingested_at, status, file_count, snapshot_path "
         "FROM ingestion WHERE repo_path = $rp ORDER BY ingested_at DESC",
         {"rp": repo_path},
     ))
@@ -130,7 +134,7 @@ async def get_ingestions_for_repo(db: AsyncSurreal, repo_path: str) -> list[dict
 async def get_all_ingestions(db: AsyncSurreal) -> list[dict]:
     """Return all ingestion records grouped by repo, newest first."""
     rows = _get_rows(await db.query(
-        "SELECT id, repo_name, repo_path, github_url, ingested_at, status, file_count "
+        "SELECT id, repo_name, repo_path, github_url, ingested_at, status, file_count, snapshot_path "
         "FROM ingestion ORDER BY ingested_at DESC"
     ))
     return rows
@@ -338,7 +342,7 @@ async def load_file(
 # Second-pass: create calls edges across all ingested files
 # ---------------------------------------------------------------------------
 
-async def load_calls(parsed_files: list[dict], db: AsyncSurreal) -> int:
+async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: str = "") -> int:
     """Create function→calls→function edges for all parsed files (second pass).
 
     Must be called after all files are loaded so callee nodes already exist.
@@ -375,7 +379,7 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal) -> int:
     for parsed in parsed_files:
         file_path = parsed["path"]
         for fn in parsed.get("functions", []):
-            caller_bare = _function_id(file_path, fn.get("class_name"), fn["name"])
+            caller_bare = _function_id(file_path, fn.get("class_name"), fn["name"], ingestion_id)
             for callee_name in (fn.get("calls") or []):
                 for callee_bare in callee_map.get(callee_name, []):
                     eid = _edge_id(caller_bare, "calls", callee_bare)

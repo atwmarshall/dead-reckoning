@@ -1,24 +1,30 @@
-# Demo Script
+# Demo Script — DeadReckoning
 
 Live judging — Sunday ~14:00. You have **2 minutes**. This is the exact script.
 
-Rehearse it 3 times Saturday evening. Know the queries cold. Have both tabs open and ready before the judges arrive at your station.
+Rehearse it 3 times Saturday evening. Know every click cold. Have all tabs open and ready before the judges arrive at your station.
 
 ---
 
 ## Setup (before judges arrive)
 
 ```
-Browser tab 1: Streamlit app (localhost:8501) — on the Knowledge Graph tab
-Browser tab 2: LangSmith (smith.langchain.com) — on the dead-reckoning project
-Terminal: ready but minimised
+Browser tab 1: Streamlit app (localhost:8501) — Knowledge Graph tab, v1 already ingested
+Browser tab 2: LangSmith (smith.langchain.com) — dead-reckoning project
+Terminal: open, minimised, ready
 ```
 
-**State of the demo repo before judges arrive:**
-- `httpx` repo fully indexed in SurrealDB (run `demo/seed_demo.py` Sunday morning)
-- Ingestion agent interrupted at ~50% — checkpointed state saved
-  - To set this up: run ingestion, kill it at ~17 files, don't resume yet
-- Graph tab should show ~17 files' worth of nodes when you open it
+**State before judges arrive:**
+- v1 sample repo fully ingested — graph shows all green nodes
+- v1 ingestion was interrupted mid-run and resumed — both runs visible in LangSmith
+- v2 sample repo NOT yet ingested — waiting to trigger live
+- Sidebar shows: `Snapshot: 48 KB · abc12345.tar`
+
+**Run Sunday morning to set this up:**
+```bash
+python demo/seed_demo.py --version v1   # ingest v1, interrupt at ~50%, resume
+# Leave the app open on the graph tab
+```
 
 ---
 
@@ -28,89 +34,85 @@ Terminal: ready but minimised
 
 **[0:00 — OPEN with the problem]**
 
-*Click to graph tab — show partial graph with ~17 nodes*
+*Show graph tab — v1 fully indexed, all nodes green*
 
 Say:
-> "Every developer knows this moment. You've joined a new codebase and you have no idea what talks to what. You're reading files trying to build a mental model that already exists — it's just locked in the code."
+> "Every developer knows this moment. New codebase, no idea what talks to what. You're reading files trying to reconstruct a map that already exists — it's just locked in the code."
 
 ---
 
-**[0:15 — SHOW the partial state]**
+**[0:12 — FIRST WOW — interrupt and resume]**
 
-*Point at the graph — nodes visible but incomplete*
+*Click to LangSmith tab — show the interrupted run, then the resumed run below it*
 
 Say:
-> "This is `httpx` — a popular Python HTTP library. Our agent started mapping it into a knowledge graph in SurrealDB. Files, functions, imports — all becoming nodes and edges. Then I killed it."
+> "Our ingestion agent was mapping this repo into a SurrealDB knowledge graph. Halfway through — I killed it. Here's the LangSmith trace."
+
+*Point at the two runs — interrupted, then resumed*
+
+Say:
+> "Same thread ID. It resumed from checkpoint — exactly where it stopped. The nodes already built stayed in the graph. That's the SurrealDB checkpointer: agent state survives the kill."
+
+*Switch back to graph tab*
 
 ---
 
-**[0:25 — THE WOW MOMENT — interrupt/resume]**
+**[0:35 — SECOND WOW — versioned diff]**
 
-*Switch to terminal. Type:*
+*In the sidebar, click "v2 — sample repo (with changes)" quick-select → path fills*
+
+Say:
+> "Now the code has changed. New version."
+
+*Click Ingest → conflict dialog: "A previous version exists"*
+
+Say:
+> "It detects the previous version and asks what to do."
+
+*Click "Add new version" → graph animates → nodes turn green, yellow, red*
+
+Say:
+> "Green: unchanged. Yellow: modified. Red: deleted. The knowledge graph is now a diff."
+
+*Open terminal. Type:*
 ```bash
-python -c "
-from agent.ingest_graph import build_ingestion_agent
-agent = build_ingestion_agent()
-config = {'configurable': {'thread_id': 'ingest-httpx'}}
-result = agent.invoke(None, config)
-"
+tar tf ~/.dead-reckoning/snapshots/$(ls -t ~/.dead-reckoning/snapshots/ | head -1)
 ```
 
-Say (while it runs):
-> "Same thread ID. Watch."
-
-*Point at terminal output — should print "resuming from checkpoint, 17 files already processed"*
-
 Say:
-> "It resumed exactly where it stopped. The 17 files it already processed? Still in the graph. It didn't start over. That's the SurrealDB checkpointer — the agent's state survived the kill."
-
-*Graph updates live as new nodes appear*
+> "This is a real tar file — OCI format, same content-addressing and whiteout semantics Docker uses. We implemented it in pure Python. No Docker daemon needed. You could docker import this."
 
 ---
 
-**[0:50 — QUERY the graph]**
+**[1:05 — QUERY across the diff]**
 
-*Switch to Streamlit chat tab. Click on "Ask the Codebase" tab. Type in chat:*
+*Switch to "Ask the Codebase" tab. Type:*
 ```
-what does _auth.py depend on?
+what changed between versions and what might be affected?
 ```
 
 Say (while agent responds):
-> "Now it's queryable. Plain English. The agent is traversing the knowledge graph — not searching text, following typed relationships."
-
-*Response appears — should list file dependencies*
-
----
-
-**[1:10 — SECOND QUERY — show the graph reasoning]**
-
-*Type in chat:*
-```
-which functions are involved in making an HTTP request?
-```
-
-Say:
-> "This one uses semantic search — embeddings on function docstrings — then expands the context with graph traversal. Vector search finds candidates, graph traversal finds what they connect to."
+> "The agent reasons across the diff — it knows which nodes are yellow and traverses their dependencies to surface impact."
 
 ---
 
 **[1:25 — LANGSMITH — show the reasoning]**
 
-*Switch to LangSmith tab — trace for the last query should be visible*
+*Switch to LangSmith — trace for the query visible*
 
 Say:
-> "Every step is observable. You can see the agent decided to call `semantic_search`, got 5 candidates, then called `get_dependencies` to expand context. Fully auditable."
+> "Every step observable. It called get_dependencies on the modified files to find downstream impact. Tool calls, graph traversal, fully auditable."
 
-*Point at the tool calls in the trace*
+*Point at the tool call chain*
 
 ---
 
-**[1:40 — CLOSE]**
+**[1:45 — CLOSE]**
 
-*Switch back to graph tab — full graph now visible*
+*Switch back to graph — coloured nodes*
 
 Say:
-> "One weekend. A codebase that can answer questions about itself — with a knowledge graph that survives crashes, and a reasoning agent you can watch think. Both powered by SurrealDB: the graph is the knowledge store, and the checkpoints are the agent's memory. Same database, two jobs."
+> "A knowledge graph that survives crashes, versions itself like a container layer, and lets you query across the diff. All in SurrealDB — the graph, the checkpoints, the version history. Same database. Three jobs."
 
 ---
 
@@ -121,50 +123,68 @@ Say:
 ## Anticipated judge questions
 
 **"How is this different from just using an LLM with the code as context?"**
-> "Context windows can't do multi-hop graph traversal. 'What imports auth.py, and what does that file import?' is a structural question — you need the graph. LLMs also forget between sessions. Our agent accumulates knowledge across runs."
+> "Context windows can't do multi-hop graph traversal. 'What imports auth.py, and what does that import?' is structural — you need the graph. LLMs also forget between sessions. Our agent accumulates knowledge across runs and versions."
 
-**"What happens if you change the code?"**
-> "Re-run the ingestion on the changed files — same deterministic IDs, so it updates the existing nodes rather than duplicating. The graph evolves with the codebase."
+**"Why OCI tar format?"**
+> "Same content-addressing as Docker — SHA-256 per file, whiteout entries for deletions. Pure Python stdlib, zero extra dependencies. The snapshots are format-compatible: you can docker import them. We understood the spec well enough to implement it ourselves."
+
+**"What happens to the graph on a new version?"**
+> "We diff the two tar snapshots — old SHA-256 vs new. Same hash goes green, changed goes yellow, absent goes red. SurrealDB nodes get a diff_status field updated in place. No re-ingestion needed for the diff — it's pure snapshot comparison."
 
 **"Why SurrealDB specifically?"**
-> "It's the only database doing graph traversal AND vector search in a single query, in the same instance. We didn't need a separate vector store — the hybrid retrieval query is a single SurrealQL statement."
+> "One instance doing three things: knowledge graph with typed edges, LangGraph checkpoint state, and version history with snapshot paths. Graph traversal AND vector search in a single SurrealQL query. No second database anywhere."
 
-**"What's the LangGraph checkpointer doing exactly?"**
-> "LangGraph saves the agent's full state — every variable, every message, the position in the graph — after each step. We're using `langgraph-checkpoint-surrealdb` which stores that state in SurrealDB. Same database as the knowledge graph, different tables. When we resume, LangGraph rehydrates the state and continues the loop."
+**"What's the LangGraph checkpointer doing?"**
+> "After every node, LangGraph serialises the full agent state and writes it to SurrealDB via langgraph-checkpoint-surrealdb. Same thread ID on resume = rehydrate that state and continue the loop from where it stopped."
 
 **"Does it work on non-Python repos?"**
-> "Python only right now — we used the built-in `ast` module for reliable parsing. tree-sitter would add multi-language support; that's the obvious next step."
+> "Python only for the AST parsing — we used the built-in ast module. tree-sitter adds multi-language support; that's the obvious next step. The snapshot and diff layer works on any file type already."
 
 ---
 
-## What to have queued up (pre-typed, ready to paste)
-
-Have these in a scratch file to copy-paste fast during the demo:
+## Pre-typed queries — scratch file, copy-paste during demo
 
 ```
+what changed between versions and what might be affected?
 what does _auth.py depend on?
-which functions are involved in making an HTTP request?
-what would break if I changed the _client.py connection logic?
-explain what _models.py contains
+which functions handle the core HTTP request logic?
+what would break if I removed utils.py?
 ```
 
 ---
 
 ## Timing failsafes
 
-**If the agent is slow (> 15s):** Keep talking. "The agent is doing a multi-hop graph traversal — you can see the tool calls firing in LangSmith..." — switch to LangSmith while it runs.
+**If diff colouring is slow (> 5s):** Keep talking — "computing SHA-256 across both tar snapshots, same as Docker layer diffing..." — it will arrive.
 
-**If the resume fails:** Don't panic. Say "let me show you the SurrealDB query directly" — open the SurrealDB cloud console and run `SELECT ->imports->file FROM file LIMIT 1` live. Shows the graph is real.
+**If the conflict dialog doesn't appear:** v1 ingestion_id not in session state. Refresh, re-ingest v1 quickly (fixture repo is fast), then ingest v2.
 
-**If Streamlit crashes:** Have a terminal fallback:
+**If the agent query is slow (> 15s):** Switch to LangSmith immediately — "you can watch it reasoning right now" — point at tool calls firing. The wait becomes part of the demo.
+
+**If you need to show interrupt/resume live instead of via LangSmith history:**
+```bash
+python -c "
+from agent.ingest_graph import build_ingestion_agent
+agent = build_ingestion_agent()
+config = {'configurable': {'thread_id': 'ingest-sample-v1'}}
+agent.invoke(None, config)
+"
+```
+
+**If Streamlit crashes entirely:**
 ```bash
 python -c "
 from agent.graph import build_query_agent
 agent = build_query_agent()
 config = {'configurable': {'thread_id': 'demo-fallback'}}
-r = agent.invoke({'messages': [('user', 'what does _auth.py depend on?')], 'repo_path': '/tmp/demo-repo'}, config)
+r = agent.invoke({
+    'messages': [('user', 'what does _auth.py depend on?')],
+    'repo_path': 'tests/fixtures/sample_repo/v1'
+}, config)
 print(r['messages'][-1].content)
 "
 ```
 
-**If you have less than 2 minutes:** Cut to the interrupt/resume moment immediately, then one agent query, then close. Skip everything else. The wow moment > everything.
+**If you have under 90 seconds:** Skip the query and LangSmith entirely. Do: problem → interrupt/resume (point at LangSmith history) → diff colouring → close. The two visual moments are enough to win.
+
+**The one thing that must not fail:** Green/yellow/red colouring on the v1→v2 diff. Rehearse this flow until it works perfectly every single time before Sunday morning.

@@ -17,6 +17,7 @@ from agent.ingest_graph import build_ingestion_agent
 from langgraph.types import Command
 from ingestion.diff import DiffEngine
 from ingestion.github import clone_repo, is_github_url
+from ingestion.snapshot import create_snapshot
 from ingestion.loader import (
     create_ingestion,
     delete_ingestion,
@@ -118,13 +119,24 @@ def _run_ingestion(
 
         progress["ingestion_id"] = ingestion_id
 
+        # 1.5. Create tar snapshot of current disk state (non-fatal)
+        new_snapshot_path = None
+        if not existing_ingestion_id:
+            iid_bare = ingestion_id.split(":", 1)[1] if ":" in ingestion_id else ingestion_id
+            try:
+                new_snapshot_path = create_snapshot(disk_path, iid_bare)
+            except Exception as snap_err:
+                print(f"Snapshot creation failed (non-fatal): {snap_err}")
+
         # 2. Run diff if we have a previous version (skip on resume)
         if prev_ingestion_id and not resume_mode:
             diff_status_log.append("Computing diff…")
 
             async def _run_diff():
                 async with get_db_client() as db:
-                    async for event in DiffEngine.run(disk_path, prev_ingestion_id, db):
+                    async for event in DiffEngine.run(
+                        disk_path, prev_ingestion_id, db, new_snapshot_path=new_snapshot_path
+                    ):
                         diff_highlights[event["node_id"]] = event["status"]
                         diff_status_log.append(
                             f"{event['status'].upper()}: {Path(event['path']).name}"
@@ -686,6 +698,7 @@ def _init_state() -> None:
         "graph_last_refreshed": "",
         "selected_node_id": None,
         "selected_node_detail": None,
+        "ingest_preset_disk_path": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -887,6 +900,18 @@ with st.sidebar:
     # ── Expander 1: Ingestion ──────────────────────────────────────────
     ingest_expanded = status not in ("done",)
     with st.expander("Ingestion", expanded=ingest_expanded):
+        _FIXTURE_ROOT = Path(__file__).parent.parent / "tests/fixtures/sample_repo"
+        _PRESET_REPOS = [
+            ("v1 — sample repo", str(_FIXTURE_ROOT), str(_FIXTURE_ROOT / "v1")),
+            ("v2 — sample repo (with changes)", str(_FIXTURE_ROOT), str(_FIXTURE_ROOT / "v2")),
+        ]
+        with st.expander("Quick select", expanded=False):
+            for _label, _repo_path, _disk_path in _PRESET_REPOS:
+                if st.button(_label, use_container_width=True, key=f"preset_{_label}"):
+                    st.session_state.ingest_source_input = _repo_path
+                    st.session_state.ingest_preset_disk_path = _disk_path
+                    st.rerun()
+
         ingest_source = st.text_input(
             "Repo path or GitHub URL",
             value="",
@@ -915,6 +940,11 @@ with st.sidebar:
                         disk_path = source
                         github_url = None
                         cleanup_fn = None
+
+                    # Preset may supply a separate disk_path (e.g. fixture v1/v2)
+                    preset_disk = st.session_state.pop("ingest_preset_disk_path", None)
+                    if preset_disk and not is_github_url(source):
+                        disk_path = preset_disk
 
                     if disk_path:
                         existing = _check_existing_ingestions(repo_path)
@@ -1044,7 +1074,14 @@ with st.sidebar:
                     return "All versions"
                 at = str(v.get("ingested_at", ""))[:19].replace("T", " ")
                 fc = v.get("file_count", "?")
-                return f"{at}  ({fc} files)"
+                snap = v.get("snapshot_path")
+                snap_info = ""
+                if snap:
+                    snap_file = Path(snap)
+                    if snap_file.exists():
+                        size_kb = snap_file.stat().st_size // 1024
+                        snap_info = f" · {size_kb}KB tar"
+                return f"{at}  ({fc} files{snap_info})"
 
             selected_version = st.selectbox(
                 "Version",

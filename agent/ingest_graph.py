@@ -116,7 +116,7 @@ def _create_call_edges(state: IngestionState) -> dict:
 
     async def _load():
         async with get_db_client() as db:
-            return await load_calls(parsed_files, db)
+            return await load_calls(parsed_files, db, ingestion_id=state.get("ingestion_id", ""))
 
     count = asyncio.run(_load())
     print(f"Call edges created: {count}")

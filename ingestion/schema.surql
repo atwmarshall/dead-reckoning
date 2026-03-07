@@ -6,7 +6,8 @@ DEFINE FIELD IF NOT EXISTS github_url   ON ingestion TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS ingested_at  ON ingestion TYPE datetime;
 DEFINE FIELD IF NOT EXISTS status       ON ingestion TYPE string DEFAULT 'pending';
 DEFINE FIELD IF NOT EXISTS content_hash ON ingestion TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS file_count   ON ingestion TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS file_count     ON ingestion TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS snapshot_path  ON ingestion TYPE option<string>;
 
 -- REPO: represents the root of an indexed repository
 DEFINE TABLE IF NOT EXISTS repo SCHEMAFULL;
