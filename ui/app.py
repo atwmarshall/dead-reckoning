@@ -3,9 +3,11 @@ import json
 import re
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+from langchain_core.messages import ToolMessage
 from streamlit_agraph import Config, Edge, Node, agraph
 
 from agent.graph import build_query_agent
@@ -21,28 +23,28 @@ CLASS_COLOR = "#27AE60"  # green
 # Matches file paths like /abs/path/file.py:42 or rel/path/file.py:42
 # Requires at least one slash so dotted names (agent.graph) are excluded.
 _PATH_RE = re.compile(
-    r"`((?:/[\w./-]+\.\w{1,6})(?::\d+)?)`"          # `backtick-wrapped`
-    r"|(?<![\[(`/])((?:/[\w./-]+\.\w{1,6})(?::\d+)?)"  # /absolute/path.ext
-    r"|(?<![\[(`/\w])((?:[\w.-]+/)+[\w.-]+\.\w{1,6}(?::\d+)?)"  # relative/path.ext
+    r"`((?:/[\w./-]+\.\w{1,6})(?::\d+)?)`"                        # `backtick-wrapped`
+    r"|(?<![\[(`/\w:])((?:/[\w./-]+\.\w{1,6})(?::\d+)?)"          # /absolute/path.ext
+    r"|(?<![\[(`/\w.])((?:[\w.-]+/)+[\w.-]+\.\w{1,6}(?::\d+)?)"   # relative/path.ext
 )
 
 
 def _linkify_paths(text: str, repo_path: str = "") -> str:
     """Replace file paths in text with vscode:// clickable markdown links."""
-    def _make_link(raw: str) -> str:
+    def _make_link(raw: str, original: str) -> str:
         path_part, _, line_part = raw.partition(":")
         if path_part.startswith("/"):
             abs_path = path_part
         elif repo_path:
             abs_path = f"{repo_path.rstrip('/')}/{path_part}"
         else:
-            return f"`{raw}`"
+            return original  # can't resolve relative path without repo root
         url = f"vscode://file{abs_path}" + (f":{line_part}" if line_part else "")
         return f"[`{raw}`]({url})"
 
     def _replace(m: re.Match) -> str:
         raw = m.group(1) or m.group(2) or m.group(3)
-        return _make_link(raw)
+        return _make_link(raw, m.group(0))
 
     return _PATH_RE.sub(_replace, text)
 
@@ -331,6 +333,8 @@ def _init_state() -> None:
         "ctx_graph_nodes": [],
         "ctx_graph_edges": [],
         "ctx_query": "",
+        "graph_interval": 60,
+        "graph_last_refreshed": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -440,40 +444,53 @@ with st.sidebar:
 tab_graph, tab_chat = st.tabs(["Knowledge Graph", "Ask the Codebase"])
 
 
+# ── Graph refresh helper ───────────────────────────────────────────────────
+
+def _do_graph_refresh():
+    try:
+        data = _fetch_graph_data()
+        nodes, edges = _build_agraph(*data)
+        st.session_state["graph_nodes"] = nodes
+        st.session_state["graph_edges"] = edges
+        st.session_state["graph_last_refreshed"] = datetime.now().strftime("%H:%M:%S")
+        st.session_state.pop("graph_error", None)
+    except Exception as exc:
+        st.session_state["graph_error"] = str(exc)
+        st.session_state.pop("graph_nodes", None)
+
+
 # ── Tab 1: Knowledge Graph ─────────────────────────────────────────────────
 with tab_graph:
-    if st.button("Refresh graph", type="primary"):
-        try:
-            with st.spinner("Loading graph from SurrealDB…"):
-                folders, files, fns, classes, contains_edges, folder_edges = _fetch_graph_data()
-            nodes, edges = _build_agraph(folders, files, fns, classes, contains_edges, folder_edges)
-            st.session_state["graph_nodes"] = nodes
-            st.session_state["graph_edges"] = edges
-            st.session_state.pop("graph_error", None)
-        except Exception as exc:
-            st.session_state["graph_error"] = str(exc)
-            st.session_state.pop("graph_nodes", None)
-        st.rerun()
+    st.number_input(
+        "Auto-refresh every (seconds)",
+        min_value=10, max_value=600, step=10,
+        key="graph_interval",
+    )
 
-    if "graph_error" in st.session_state:
-        st.error(f"Could not load graph: {st.session_state['graph_error']}")
-    elif "graph_nodes" in st.session_state:
-        g_nodes: list = st.session_state["graph_nodes"]
-        g_edges: list = st.session_state["graph_edges"]
-        if g_nodes:
-            st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
-            cfg = Config(
-                width="100%",
-                height=620,
-                directed=True,
-                physics=True,
-                hierarchical=False,
-            )
-            agraph(nodes=g_nodes, edges=g_edges, config=cfg)
-        else:
-            st.info("No nodes in the database yet. Run ingestion first, then refresh.")
-    else:
-        st.info("Click **Refresh graph** to load the knowledge graph.")
+    @st.fragment(run_every=st.session_state.graph_interval)
+    def _graph_fragment():
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.button("Refresh now", type="primary")
+        with col2:
+            if st.session_state.get("graph_last_refreshed"):
+                st.caption(f"Last refreshed: {st.session_state['graph_last_refreshed']}")
+
+        _do_graph_refresh()
+
+        if "graph_error" in st.session_state:
+            st.error(f"Could not load graph: {st.session_state['graph_error']}")
+        elif "graph_nodes" in st.session_state:
+            g_nodes = st.session_state["graph_nodes"]
+            g_edges = st.session_state["graph_edges"]
+            if g_nodes:
+                st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
+                cfg = Config(width="100%", height=620, directed=True, physics=True, hierarchical=False)
+                agraph(nodes=g_nodes, edges=g_edges, config=cfg)
+            else:
+                st.info("No nodes yet. Run ingestion first.")
+
+    _graph_fragment()
 
 
 # ── Tab 2: Ask the Codebase ────────────────────────────────────────────────
@@ -492,26 +509,48 @@ with tab_chat:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Thinking…"):
-                    try:
-                        if "query_agent" not in st.session_state:
-                            st.session_state.query_agent = build_query_agent()
+                try:
+                    if "query_agent" not in st.session_state:
+                        st.session_state.query_agent = build_query_agent()
+                    agent = st.session_state.query_agent
+                    config = {"configurable": {"thread_id": f"query-{st.session_state.session_id}"}}
+                    inputs = {
+                        "messages": [("user", prompt)],
+                        "repo_path": st.session_state.repo_path_input,
+                    }
 
-                        agent = st.session_state.query_agent
-                        chat_thread_id = f"query-{st.session_state.session_id}"
-                        result = agent.invoke(
-                            {
-                                "messages": [("user", prompt)],
-                                "repo_path": st.session_state.repo_path_input,
-                            },
-                            {"configurable": {"thread_id": chat_thread_id}},
-                        )
-                        response = result["messages"][-1].content
-                        st.session_state.context_refs = _extract_context_refs(result["messages"])
-                    except Exception as exc:
-                        response = f"Error: {exc}"
+                    status = st.status("Thinking…", expanded=True)
+                    response_area = st.empty()
+                    response = ""
 
-                st.markdown(_linkify_paths(response, st.session_state.get("repo_path_input", "")))
+                    for chunk, _meta in agent.stream(inputs, config, stream_mode="messages"):
+                        if getattr(chunk, "tool_call_chunks", []):
+                            for tc in chunk.tool_call_chunks:
+                                if tc.get("name"):
+                                    with status:
+                                        st.write(f"Calling `{tc['name']}`…")
+                        elif isinstance(chunk, ToolMessage):
+                            with status:
+                                st.write(f"Got results from `{chunk.name}`")
+                        elif (
+                            isinstance(getattr(chunk, "content", None), str)
+                            and chunk.content
+                            and not getattr(chunk, "tool_call_chunks", [])
+                        ):
+                            response += chunk.content
+                            response_area.markdown(response + "▌")
+
+                    status.update(label="Done", state="complete", expanded=False)
+                    repo = st.session_state.get("repo_path_input", "")
+                    response_area.markdown(_linkify_paths(response, repo))
+
+                    state = agent.get_state(config)
+                    st.session_state.context_refs = _extract_context_refs(
+                        state.values.get("messages", [])
+                    )
+                except Exception as exc:
+                    response = f"Error: {exc}"
+                    st.markdown(response)
 
             st.session_state.messages.append({"role": "assistant", "content": response})
 
