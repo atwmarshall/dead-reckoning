@@ -73,11 +73,21 @@ class DiffEngine:
 
         for path in prev_paths & current_paths:
             node_id = _file_node_id(path, prev_ingestion_id)
+            rid = node_id.split(":", 1)[1]
             prev_hash = prev_map[path]
             curr_hash = current_map[path]
             status = "green" if prev_hash == curr_hash else "yellow"
+            await db.query(
+                "UPDATE type::record('file', $rid) SET diff_status = $s",
+                {"rid": rid, "s": status},
+            )
             yield {"node_id": node_id, "status": status, "path": path}
 
         for path in prev_paths - current_paths:
             node_id = _file_node_id(path, prev_ingestion_id)
+            rid = node_id.split(":", 1)[1]
+            await db.query(
+                "UPDATE type::record('file', $rid) SET diff_status = $s",
+                {"rid": rid, "s": "red"},
+            )
             yield {"node_id": node_id, "status": "red", "path": path}

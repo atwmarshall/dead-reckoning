@@ -172,8 +172,14 @@ async def load_file(
     repo_path: str | None = None,
     ingestion_id: str = "",
     content_hash: str | None = None,
+    disk_path: str | None = None,
 ) -> dict:
-    """Upsert one file's nodes and edges for a specific ingestion. Returns count dict."""
+    """Upsert one file's nodes and edges for a specific ingestion. Returns count dict.
+
+    repo_path  – canonical identifier written to DB (URL or local path).
+    disk_path  – actual filesystem root used to compute folder hierarchy.
+                 Defaults to repo_path when not supplied (local repos).
+    """
     path = parsed["path"]
     fid = _file_id(path, ingestion_id)
 
@@ -186,7 +192,7 @@ async def load_file(
          "iid": ingestion_id, "ch": content_hash},
     )
 
-    # Upsert repo node + in_repo edge
+    # Upsert repo node
     if repo_path:
         repoid = _repo_id(repo_path, ingestion_id)
         repo_name = os.path.basename(repo_path.rstrip("/"))
@@ -195,25 +201,69 @@ async def load_file(
             {"id": repoid, "path": repo_path, "name": repo_name, "iid": ingestion_id},
         )
 
-    # Upsert parent folder node + in_folder edge
-    folder_path = os.path.dirname(path)
-    folderid = _folder_id(folder_path, ingestion_id)
-    await db.query(
-        "UPSERT type::record('folder', $id) SET path = $path, ingestion_id = $iid",
-        {"id": folderid, "path": folder_path, "iid": ingestion_id},
-    )
-    eid = _edge_id(fid, "in_folder", folderid)
-    await db.query(
-        "INSERT RELATION INTO in_folder { id: type::record('in_folder', $eid), in: type::record('file', $fid), out: type::record('folder', $folderid) } ON DUPLICATE KEY UPDATE in = in",
-        {"eid": eid, "fid": fid, "folderid": folderid},
-    )
-
+    # Build full folder hierarchy from file up to repo root.
+    # disk_path is the filesystem root; repo_path is the canonical DB identifier.
+    # For local repos they are the same.  For GitHub clones disk_path is the
+    # temp clone dir while repo_path is the original URL.
     if repo_path:
-        eid = _edge_id(folderid, "in_repo", repoid)
-        await db.query(
-            "INSERT RELATION INTO in_repo { id: type::record('in_repo', $eid), in: type::record('folder', $folderid), out: type::record('repo', $repoid) } ON DUPLICATE KEY UPDATE in = in",
-            {"eid": eid, "folderid": folderid, "repoid": repoid},
-        )
+        fs_root = (disk_path or repo_path).rstrip("/")
+        file_dir = os.path.dirname(path)
+
+        # Collect intermediate directories from immediate parent up to (not including) fs_root.
+        # folder_chain[0] = immediate parent, folder_chain[-1] = direct child of fs_root.
+        fs_root_norm = os.path.normpath(fs_root)
+        folder_chain: list[str] = []
+        curr = file_dir
+        while curr:
+            if os.path.normpath(curr) == fs_root_norm:
+                break
+            folder_chain.append(curr)
+            parent = os.path.dirname(curr)
+            if parent == curr:  # filesystem root – stop
+                break
+            curr = parent
+
+        # Create all folder nodes
+        for fp in folder_chain:
+            fid_f = _folder_id(fp, ingestion_id)
+            await db.query(
+                "UPSERT type::record('folder', $id) SET path = $path, ingestion_id = $iid",
+                {"id": fid_f, "path": fp, "iid": ingestion_id},
+            )
+
+        # file → in_folder → immediate parent folder
+        if folder_chain:
+            immediate_fid = _folder_id(folder_chain[0], ingestion_id)
+            eid = _edge_id(fid, "in_folder", immediate_fid)
+            await db.query(
+                "INSERT RELATION INTO in_folder { id: type::record('in_folder', $eid), in: type::record('file', $fid), out: type::record('folder', $fid_f) } ON DUPLICATE KEY UPDATE in = in",
+                {"eid": eid, "fid": fid, "fid_f": immediate_fid},
+            )
+
+            # Chain intermediate folders: folder[i] → in_folder → folder[i+1]
+            for i in range(len(folder_chain) - 1):
+                child_fid  = _folder_id(folder_chain[i],     ingestion_id)
+                parent_fid = _folder_id(folder_chain[i + 1], ingestion_id)
+                eid = _edge_id(child_fid, "in_folder", parent_fid)
+                await db.query(
+                    "INSERT RELATION INTO in_folder { id: type::record('in_folder', $eid), in: type::record('folder', $cfid), out: type::record('folder', $pfid) } ON DUPLICATE KEY UPDATE in = in",
+                    {"eid": eid, "cfid": child_fid, "pfid": parent_fid},
+                )
+
+            # Top-level folder (direct child of repo root) → in_repo → repo
+            top_fid = _folder_id(folder_chain[-1], ingestion_id)
+            eid = _edge_id(top_fid, "in_repo", repoid)
+            await db.query(
+                "INSERT RELATION INTO in_repo { id: type::record('in_repo', $eid), in: type::record('folder', $folderid), out: type::record('repo', $repoid) } ON DUPLICATE KEY UPDATE in = in",
+                {"eid": eid, "folderid": top_fid, "repoid": repoid},
+            )
+        else:
+            # File is directly in the repo root – connect file straight to repo
+            eid = _edge_id(fid, "in_repo", repoid)
+            await db.query(
+                "INSERT RELATION INTO in_repo { id: type::record('in_repo', $eid), in: type::record('file', $fid), out: type::record('repo', $repoid) } ON DUPLICATE KEY UPDATE in = in",
+                {"eid": eid, "fid": fid, "repoid": repoid},
+            )
 
     fn_count = 0
     class_count = 0

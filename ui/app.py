@@ -136,8 +136,18 @@ def _run_ingestion(
                 progress["status"] = "stopped"
                 return
 
-        # 4. Clear any remaining highlights (e.g. deleted files that won't be re-ingested)
+        # 4. Clear diff_status from prev version's nodes in DB
+        if prev_ingestion_id:
+            async def _clear_diff_status():
+                async with get_db_client() as db:
+                    await db.query(
+                        "UPDATE file SET diff_status = NONE WHERE ingestion_id = $iid",
+                        {"iid": prev_ingestion_id},
+                    )
+            asyncio.run(_clear_diff_status())
+
         diff_highlights.clear()
+        progress.pop("diff_base_iid", None)
         progress["status"] = "done"
 
     except Exception as exc:
@@ -190,13 +200,13 @@ def _fetch_graph_data(ingestion_id: str | None = None) -> tuple:
                 p = {"iid": ingestion_id}
                 repos   = await db.query("SELECT id, name FROM repo WHERE ingestion_id = $iid LIMIT 100", p)
                 folders = await db.query("SELECT id, path FROM folder WHERE ingestion_id = $iid LIMIT 5000", p)
-                files   = await db.query("SELECT id, path FROM file WHERE ingestion_id = $iid LIMIT 5000", p)
+                files   = await db.query("SELECT id, path, diff_status FROM file WHERE ingestion_id = $iid LIMIT 5000", p)
                 fns     = await db.query("SELECT id, name FROM `function` WHERE ingestion_id = $iid LIMIT 5000", p)
                 classes = await db.query("SELECT id, name FROM `class` WHERE ingestion_id = $iid LIMIT 5000", p)
             else:
                 repos   = await db.query("SELECT id, name FROM repo LIMIT 100")
                 folders = await db.query("SELECT id, path FROM folder LIMIT 5000")
-                files   = await db.query("SELECT id, path FROM file LIMIT 5000")
+                files   = await db.query("SELECT id, path, diff_status FROM file LIMIT 5000")
                 fns     = await db.query("SELECT id, name FROM `function` LIMIT 5000")
                 classes = await db.query("SELECT id, name FROM `class` LIMIT 5000")
 
@@ -214,48 +224,45 @@ def _build_agraph(
     contains_raw, folder_edges_raw, repo_edges_raw,
     diff_highlights: dict | None = None,
 ) -> tuple[list, list]:
-    dh = diff_highlights or {}
     nodes: list[Node] = []
     edges: list[Edge] = []
     seen: set[str] = set()
-
-    def _color(nid: str, default: str) -> str:
-        status = dh.get(nid)
-        return DIFF_COLORS[status] if status else default
 
     for row in _get_rows(repos):
         nid = str(row.get("id", ""))
         label = str(row.get("name", ""))
         if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=_color(nid, REPO_COLOR), size=35))
+            nodes.append(Node(id=nid, label=label, color=REPO_COLOR, size=35))
             seen.add(nid)
 
     for row in _get_rows(folders):
         nid = str(row.get("id", ""))
         label = str(row.get("path", "")).split("/")[-1] or str(row.get("path", ""))
         if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=_color(nid, FOLDER_COLOR), size=25))
+            nodes.append(Node(id=nid, label=label, color=FOLDER_COLOR, size=25))
             seen.add(nid)
 
     for row in _get_rows(files):
         nid = str(row.get("id", ""))
         label = Path(str(row.get("path", ""))).name
+        ds = row.get("diff_status")
+        color = DIFF_COLORS[ds] if ds in DIFF_COLORS else FILE_COLOR
         if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=_color(nid, FILE_COLOR), size=20))
+            nodes.append(Node(id=nid, label=label, color=color, size=20))
             seen.add(nid)
 
     for row in _get_rows(fns):
         nid = str(row.get("id", ""))
         label = str(row.get("name", ""))
         if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=_color(nid, FUNC_COLOR), size=12))
+            nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
             seen.add(nid)
 
     for row in _get_rows(classes):
         nid = str(row.get("id", ""))
         label = str(row.get("name", ""))
         if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=_color(nid, CLASS_COLOR), size=15))
+            nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
             seen.add(nid)
 
     for row in _get_rows(contains_raw):
@@ -468,7 +475,10 @@ def _start_ingestion(pending: dict, prev_ingestion_id: str | None) -> None:
     stop_event = threading.Event()
     diff_highlights: dict = {}
     diff_status_log: list = []
-    new_progress: dict = {"processed": 0, "total": 0, "status": "running"}
+    new_progress: dict = {
+        "processed": 0, "total": 0, "status": "running",
+        "diff_base_iid": prev_ingestion_id,
+    }
 
     st.session_state.ingest_thread_id = thread_id
     st.session_state.ingest_stop_event = stop_event
@@ -708,11 +718,18 @@ tab_graph, tab_chat = st.tabs(["Knowledge Graph", "Ask the Codebase"])
 # ── Graph refresh helper ────────────────────────────────────────────────────
 
 def _do_graph_refresh():
-    iid = st.session_state.get("selected_ingestion_id") or None
+    thread = st.session_state.get("ingest_thread")
+    _alive = thread is not None and thread.is_alive()
+    p = st.session_state.ingest_progress
+
+    # While re-ingesting with a diff base, pin the graph to the prev version
+    # so the diff_status colours on those nodes are visible.
+    diff_base_iid = p.get("diff_base_iid") if _alive else None
+    iid = diff_base_iid or st.session_state.get("selected_ingestion_id") or None
+
     try:
         data = _fetch_graph_data(iid)
-        diff_h = dict(st.session_state.diff_highlights)  # snapshot
-        nodes, edges = _build_agraph(*data, diff_highlights=diff_h)
+        nodes, edges = _build_agraph(*data)
         st.session_state["graph_nodes"] = nodes
         st.session_state["graph_edges"] = edges
         st.session_state["graph_last_refreshed"] = datetime.now().strftime("%H:%M:%S")
@@ -725,20 +742,20 @@ def _do_graph_refresh():
 # ── Tab 1: Knowledge Graph ──────────────────────────────────────────────────
 
 with tab_graph:
-    graph_col, status_col = st.columns([7, 3])
+    st.number_input(
+        "Auto-refresh every (seconds)",
+        min_value=1, max_value=600, step=5,
+        key="graph_interval",
+    )
 
-    with graph_col:
-        st.number_input(
-            "Auto-refresh every (seconds)",
-            min_value=1, max_value=600, step=5,
-            key="graph_interval",
-        )
+    is_active = is_alive or bool(st.session_state.diff_highlights)
+    run_every = 1 if is_active else st.session_state.graph_interval
 
-        is_active = is_alive or bool(st.session_state.diff_highlights)
-        run_every = 1 if is_active else st.session_state.graph_interval
+    @st.fragment(run_every=run_every)
+    def _graph_fragment():
+        graph_col, status_col = st.columns([7, 3])
 
-        @st.fragment(run_every=run_every)
-        def _graph_fragment():
+        with graph_col:
             btn_col, ts_col = st.columns([1, 3])
             with btn_col:
                 st.button("Refresh now", type="primary")
@@ -756,49 +773,59 @@ with tab_graph:
                 if g_nodes:
                     st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
                     cfg = Config(
-                        width="100%", height=580,
+                        width="100%", height=540,
                         directed=True, physics=True, hierarchical=False,
                     )
                     agraph(nodes=g_nodes, edges=g_edges, config=cfg)
                 else:
                     st.info("No nodes yet — select a version or run ingestion.")
 
-        _graph_fragment()
+        with status_col:
+            st.subheader("Ingestion Status")
 
-    with status_col:
-        st.subheader("Ingestion Status")
+            _thread: threading.Thread | None = st.session_state.get("ingest_thread")
+            _alive = _thread is not None and _thread.is_alive()
+            p = st.session_state.ingest_progress
+            _status = p.get("status", "idle")
+            if _alive and _status not in ("running", "stopping"):
+                _status = "running"
 
-        p = st.session_state.ingest_progress
-        status = p.get("status", "idle")
-        if is_alive and status not in ("running", "stopping"):
-            status = "running"
+            if _status == "running":
+                _processed = p.get("processed", 0)
+                _total = p.get("total", 0)
+                if _total:
+                    st.progress(_processed / _total, text=f"{_processed}/{_total} files")
+                else:
+                    st.write("Starting…")
+            elif _status == "done":
+                st.success("Ingestion complete.")
+            elif _status == "error":
+                st.error(p.get("error", "Unknown error"))
 
-        if status == "running":
-            processed = p.get("processed", 0)
-            total = p.get("total", 0)
-            if total:
-                st.progress(processed / total, text=f"{processed}/{total} files")
-            else:
-                st.write("Starting…")
-        elif status == "done":
-            st.success("Ingestion complete.")
-        elif status == "error":
-            st.error(p.get("error", "Unknown error"))
+            log = list(st.session_state.diff_status_log)
+            if log:
+                highlights = st.session_state.diff_highlights
+                if highlights:
+                    n_green  = sum(1 for v in highlights.values() if v == "green")
+                    n_yellow = sum(1 for v in highlights.values() if v == "yellow")
+                    n_red    = sum(1 for v in highlights.values() if v == "red")
+                    st.caption(
+                        f"Diff: {n_green} unchanged · {n_yellow} modified · {n_red} deleted"
+                    )
 
-        log = list(st.session_state.diff_status_log)
-        if log:
-            highlights = st.session_state.diff_highlights
-            if highlights:
-                n_green  = sum(1 for v in highlights.values() if v == "green")
-                n_yellow = sum(1 for v in highlights.values() if v == "yellow")
-                n_red    = sum(1 for v in highlights.values() if v == "red")
-                st.caption(
-                    f"Diff: {n_green} unchanged · {n_yellow} modified · {n_red} deleted"
-                )
+                with st.container(height=440):
+                    for line in reversed(log[-200:]):
+                        st.caption(line)
 
-            with st.container(height=480):
-                for line in reversed(log[-200:]):
-                    st.caption(line)
+            # When the background thread finishes, trigger a full page rerun so
+            # the sidebar status and version selector both update.
+            # Use a flag to fire exactly once per completion event.
+            if _alive:
+                st.session_state["_ingestion_was_running"] = True
+            elif st.session_state.pop("_ingestion_was_running", False):
+                st.rerun(scope="app")
+
+    _graph_fragment()
 
 
 # ── Tab 2: Ask the Codebase ─────────────────────────────────────────────────

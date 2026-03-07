@@ -34,6 +34,7 @@ DEFINE FIELD IF NOT EXISTS line_count   ON file TYPE int;
 DEFINE FIELD IF NOT EXISTS embedding    ON file TYPE option<array>;
 DEFINE FIELD IF NOT EXISTS ingestion_id ON file TYPE string;
 DEFINE FIELD IF NOT EXISTS content_hash ON file TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS diff_status  ON file TYPE option<string>;
 
 REMOVE INDEX IF EXISTS file_path_idx ON TABLE file;
 DEFINE INDEX file_path_iid_idx ON file FIELDS path, ingestion_id UNIQUE;

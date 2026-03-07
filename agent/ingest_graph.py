@@ -55,6 +55,8 @@ def _process_file(state: IngestionState) -> dict:
     except OSError:
         content_hash = None
 
+    disk = state.get("disk_path") or state["repo_path"]
+
     async def _load():
         async with get_db_client() as db:
             await load_file(
@@ -63,6 +65,7 @@ def _process_file(state: IngestionState) -> dict:
                 repo_path=state["repo_path"],
                 ingestion_id=ingestion_id,
                 content_hash=content_hash,
+                disk_path=disk,
             )
 
     asyncio.run(_load())
