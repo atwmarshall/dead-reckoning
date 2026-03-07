@@ -26,19 +26,41 @@ from ingestion.loader import (
     load_file,
 )
 
-# ── Colours ────────────────────────────────────────────────────────────────
-REPO_COLOR   = "#E74C3C"
-FOLDER_COLOR = "#F39C12"
-FILE_COLOR   = "#4C8BF5"
-FUNC_COLOR   = "#9B59B6"
-CLASS_COLOR  = "#27AE60"
-CALLS_EDGE_COLOR = "#E67E22"
+# ── Colour-blind-safe palette ─────────────────────────────────────────────
+REPO_COLOR   = "#FF6D00"   # orange-red
+FOLDER_COLOR = "#FFB300"   # amber
+FILE_COLOR   = "#42A5F5"   # blue
+FUNC_COLOR   = "#AB47BC"   # purple
+CLASS_COLOR  = "#00BFA5"   # teal
+CALLS_EDGE_COLOR = "#FF6D00"
 
 DIFF_COLORS = {
-    "green":  "#1DB954",
-    "yellow": "#F1C40F",
-    "red":    "#FF4444",
+    "green":  "#42A5F5",   # blue (unchanged)
+    "yellow": "#FFB300",   # amber (modified)
+    "red":    "#FF6D00",   # orange-red (deleted)
 }
+
+# ── Dark theme CSS ────────────────────────────────────────────────────────
+CUSTOM_CSS = """
+<style>
+/* Sidebar compact styling */
+section[data-testid="stSidebar"] .block-container { padding-top: 1rem; }
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stCaption,
+section[data-testid="stSidebar"] .stMarkdown { font-size: 0.85rem; }
+section[data-testid="stSidebar"] h4 { font-size: 1rem; margin-bottom: 0.25rem; }
+section[data-testid="stSidebar"] .stExpander { border: 1px solid #333; border-radius: 6px; margin-bottom: 0.5rem; }
+
+/* Accent colours */
+.stButton > button[kind="primary"] { background-color: #00BFA5; border-color: #00BFA5; }
+.stButton > button[kind="primary"]:hover { background-color: #00997F; border-color: #00997F; }
+
+/* Node detail panel in sidebar — compact */
+.sidebar-detail-header { margin-bottom: 0.25rem; font-size: 0.95rem; }
+.sidebar-detail-prop { font-size: 0.82rem; margin-bottom: 0.1rem; }
+</style>
+"""
 
 _PATH_RE = re.compile(
     r"`((?:/[\w./-]+\.\w{1,6})(?::\d+)?)`"
@@ -79,18 +101,25 @@ def _run_ingestion(
     diff_highlights: dict,
     diff_status_log: list,
     cleanup_fn,
+    *,
+    existing_ingestion_id: str | None = None,
+    resume_mode: bool = False,
 ) -> None:
     try:
-        # 1. Create ingestion record in DB
-        async def _create():
-            async with get_db_client() as db:
-                return await create_ingestion(db, repo_path, github_url)
+        # 1. Create or reuse ingestion record
+        if existing_ingestion_id:
+            ingestion_id = existing_ingestion_id
+        else:
+            async def _create():
+                async with get_db_client() as db:
+                    return await create_ingestion(db, repo_path, github_url)
 
-        ingestion_id = asyncio.run(_create())
+            ingestion_id = asyncio.run(_create())
+
         progress["ingestion_id"] = ingestion_id
 
-        # 2. Run diff if we have a previous version
-        if prev_ingestion_id:
+        # 2. Run diff if we have a previous version (skip on resume)
+        if prev_ingestion_id and not resume_mode:
             diff_status_log.append("Computing diff…")
 
             async def _run_diff():
@@ -104,36 +133,41 @@ def _run_ingestion(
             asyncio.run(_run_diff())
             diff_status_log.append(f"Diff complete — {len(diff_highlights)} nodes highlighted.")
 
-        # 3. Run LangGraph ingestion agent — phase 1: initialize + review_diff
+        # 3. Run LangGraph ingestion agent
         progress["status"] = "running"
         agent = build_ingestion_agent()
         config = {"configurable": {"thread_id": thread_id}}
-        init_state = {
-            "repo_path": repo_path,
-            "disk_path": disk_path,
-            "ingestion_id": ingestion_id,
-            "prev_ingestion_id": prev_ingestion_id or "",
-            "all_files": [],
-            "processed_files": [],
-            "current_file": "",
-        }
 
-        for chunk in agent.stream(init_state, config, stream_mode="values"):
-            pass  # initialize runs; review_diff interrupts → stream ends if prev_ingestion_id
-
-        # 3b. If interrupted (prev_ingestion_id was set), wait for user to confirm
-        graph_state = agent.get_state(config)
-        if graph_state.next:
-            progress["status"] = "awaiting_resume"
-            resume_event = progress.get("resume_event")
-            resume_event.wait()  # block thread until UI signals Continue
-            if stop_event.is_set():
-                progress["status"] = "stopped"
-                return
-            progress["status"] = "running"
+        if resume_mode:
+            # Resume from checkpoint — skip init, just send Command(resume=True)
             stream_cmd = Command(resume=True)
         else:
-            stream_cmd = None  # fresh ingest already finished in one stream
+            init_state = {
+                "repo_path": repo_path,
+                "disk_path": disk_path,
+                "ingestion_id": ingestion_id,
+                "prev_ingestion_id": prev_ingestion_id or "",
+                "all_files": [],
+                "processed_files": [],
+                "current_file": "",
+            }
+
+            for chunk in agent.stream(init_state, config, stream_mode="values"):
+                pass  # initialize runs; review_diff interrupts if prev_ingestion_id
+
+            # 3b. If interrupted (prev_ingestion_id was set), wait for user to confirm
+            graph_state = agent.get_state(config)
+            if graph_state.next:
+                progress["status"] = "awaiting_resume"
+                resume_event = progress.get("resume_event")
+                resume_event.wait()  # block thread until UI signals Continue
+                if stop_event.is_set():
+                    progress["status"] = "stopped"
+                    return
+                progress["status"] = "running"
+                stream_cmd = Command(resume=True)
+            else:
+                stream_cmd = None  # fresh ingest already finished in one stream
 
         # 3c. Process files
         def _update_progress(chunk):
@@ -354,23 +388,19 @@ NODE_TYPE_COLORS = {
 
 def _fetch_node_detail(node_id: str) -> dict:
     """Fetch properties, edge counts, and neighbors for a node."""
-    # SurrealDB record IDs look like "function:abc123"
     table = node_id.split(":")[0] if ":" in node_id else "unknown"
 
     async def _query():
         async with get_db_client() as db:
-            # 1. Fetch all properties
             props_raw = await db.query(f"SELECT * FROM {node_id}")
             props = {}
             rows = _get_rows(props_raw)
             if rows:
                 props = dict(rows[0])
 
-            # 2. Count relationships and fetch neighbors per edge table
             edge_counts = {}
             neighbors = {}
             for et in EDGE_TABLES:
-                # Incoming: this node is the target (out)
                 in_count_raw = await db.query(
                     f"SELECT count() AS cnt FROM {et} WHERE out = {node_id} GROUP ALL"
                 )
@@ -379,7 +409,6 @@ def _fetch_node_detail(node_id: str) -> dict:
                 if in_rows:
                     in_cnt = in_rows[0].get("cnt", 0)
 
-                # Outgoing: this node is the source (in)
                 out_count_raw = await db.query(
                     f"SELECT count() AS cnt FROM {et} WHERE in = {node_id} GROUP ALL"
                 )
@@ -391,7 +420,6 @@ def _fetch_node_detail(node_id: str) -> dict:
                 if in_cnt or out_cnt:
                     edge_counts[et] = {"incoming": in_cnt, "outgoing": out_cnt}
 
-                # Fetch neighbor IDs (up to 20 per direction)
                 et_neighbors = []
                 if out_cnt:
                     out_neighbors_raw = await db.query(
@@ -420,64 +448,51 @@ def _fetch_node_detail(node_id: str) -> dict:
     return asyncio.run(_query())
 
 
-def _render_detail_panel(detail: dict) -> None:
-    """Render node detail panel below the graph."""
+def _render_detail_panel_sidebar(detail: dict) -> None:
+    """Render node detail panel in the sidebar (compact vertical layout)."""
     table = detail["table"]
     props = detail["properties"]
     color = NODE_TYPE_COLORS.get(table, "#888")
 
-    # Header
     display_name = props.get("name") or props.get("path") or detail["id"]
     st.markdown(
-        f'<h4 style="color:{color}; margin-bottom:0">'
+        f'<h4 class="sidebar-detail-header" style="color:{color}; margin-bottom:0">'
         f'{table.upper()}: {display_name}</h4>',
         unsafe_allow_html=True,
     )
 
-    # Close button
-    if st.button("Close detail panel", key="close_detail"):
+    if st.button("Close", key="close_detail"):
         st.session_state["selected_node_id"] = None
         st.session_state["selected_node_detail"] = None
-        st.rerun(scope="fragment")
-
-    prop_col, rel_col = st.columns(2)
+        st.rerun(scope="app")
 
     # Properties
-    with prop_col:
-        st.subheader("Properties")
-        skip_keys = {"embedding", "id"}
-        for k, v in props.items():
-            if k in skip_keys:
-                continue
-            # Truncate long values
-            v_str = str(v)
-            if len(v_str) > 300:
-                v_str = v_str[:300] + "…"
-            st.markdown(f"**{k}:** {v_str}")
+    st.caption("**Properties**")
+    skip_keys = {"embedding", "id"}
+    for k, v in props.items():
+        if k in skip_keys:
+            continue
+        v_str = str(v)
+        if len(v_str) > 150:
+            v_str = v_str[:150] + "…"
+        st.markdown(f'<p class="sidebar-detail-prop"><b>{k}:</b> {v_str}</p>', unsafe_allow_html=True)
 
     # Relationships
-    with rel_col:
-        st.subheader("Relationships")
-        edge_counts = detail.get("edge_counts", {})
-        if not edge_counts:
-            st.caption("No relationships found.")
-        else:
-            for et, counts in edge_counts.items():
-                st.markdown(
-                    f"**{et}:** {counts['outgoing']} outgoing, "
-                    f"{counts['incoming']} incoming"
-                )
+    edge_counts = detail.get("edge_counts", {})
+    if edge_counts:
+        st.caption("**Relationships**")
+        for et, counts in edge_counts.items():
+            st.caption(f"{et}: {counts['outgoing']} out, {counts['incoming']} in")
 
-    # Neighbors
+    # Neighbors (limited)
     neighbors = detail.get("neighbors", {})
     if neighbors:
-        st.subheader("Connected Nodes")
+        st.caption("**Connected Nodes**")
         for et, neighbor_list in neighbors.items():
-            st.markdown(f"**{et}**")
-            for nb in neighbor_list:
+            for nb in neighbor_list[:10]:
                 nb_id = nb["id"]
                 nb_table = nb_id.split(":")[0] if ":" in nb_id else "?"
-                arrow = "->" if nb["direction"] == "outgoing" else "<-"
+                arrow = "→" if nb["direction"] == "outgoing" else "←"
                 btn_label = f"{arrow} [{nb_table}] {nb_id}"
                 if st.button(
                     btn_label,
@@ -486,7 +501,7 @@ def _render_detail_panel(detail: dict) -> None:
                 ):
                     st.session_state["selected_node_id"] = nb_id
                     st.session_state["selected_node_detail"] = None
-                    st.rerun(scope="fragment")
+                    st.rerun(scope="app")
 
 
 # ── Context graph helpers ──────────────────────────────────────────────────
@@ -647,6 +662,12 @@ def _init_state() -> None:
         "pending_ingest": None,
         "selected_repo_path": None,
         "selected_ingestion_id": None,
+        # Resume state
+        "ingest_ingestion_id": None,
+        "ingest_repo_path": None,
+        "ingest_disk_path": None,
+        "ingest_github_url": None,
+        "ingest_prev_ingestion_id": None,
         # Graph filter defaults
         "gf_repos": True,
         "gf_folders": True,
@@ -674,13 +695,12 @@ def _init_state() -> None:
 # ── Ingestion control helpers ──────────────────────────────────────────────
 
 def _start_ingestion(pending: dict, prev_ingestion_id: str | None) -> None:
-    """Kick off the background ingestion thread."""
+    """Kick off the background ingestion thread (fresh run)."""
     repo_path = pending["repo_path"]
     disk_path = pending.get("disk_path") or repo_path
     github_url = pending.get("github_url")
     cleanup_fn = pending.get("cleanup_fn")
 
-    # Unique thread ID per run so resume logic is scoped correctly
     thread_id = (
         f"ingest-{hashlib.md5(repo_path.encode()).hexdigest()[:8]}"
         f"-{uuid.uuid4().hex[:4]}"
@@ -696,11 +716,17 @@ def _start_ingestion(pending: dict, prev_ingestion_id: str | None) -> None:
         "resume_event": resume_event,
     }
 
+    # Persist context for resume
     st.session_state.ingest_thread_id = thread_id
     st.session_state.ingest_stop_event = stop_event
     st.session_state.ingest_progress = new_progress
     st.session_state.diff_highlights = diff_highlights
     st.session_state.diff_status_log = diff_status_log
+    st.session_state.ingest_ingestion_id = None  # will be set by thread via progress dict
+    st.session_state.ingest_repo_path = repo_path
+    st.session_state.ingest_disk_path = disk_path
+    st.session_state.ingest_github_url = github_url
+    st.session_state.ingest_prev_ingestion_id = prev_ingestion_id
 
     t = threading.Thread(
         target=_run_ingestion,
@@ -709,6 +735,55 @@ def _start_ingestion(pending: dict, prev_ingestion_id: str | None) -> None:
             thread_id, stop_event, new_progress,
             diff_highlights, diff_status_log, cleanup_fn,
         ),
+        daemon=True,
+    )
+    st.session_state.ingest_thread = t
+    t.start()
+
+
+def _resume_ingestion() -> None:
+    """Resume a stopped ingestion from its LangGraph checkpoint."""
+    thread_id = st.session_state.ingest_thread_id
+    ingestion_id = st.session_state.ingest_ingestion_id
+    repo_path = st.session_state.ingest_repo_path
+    disk_path = st.session_state.ingest_disk_path
+    github_url = st.session_state.ingest_github_url
+    prev_ingestion_id = st.session_state.ingest_prev_ingestion_id
+
+    if not thread_id or not ingestion_id or not repo_path:
+        return
+
+    stop_event = threading.Event()
+    resume_event = threading.Event()
+
+    # Preserve existing diff state
+    diff_highlights = st.session_state.diff_highlights
+    diff_status_log = st.session_state.diff_status_log
+
+    p = st.session_state.ingest_progress
+    new_progress: dict = {
+        "processed": p.get("processed", 0),
+        "total": p.get("total", 0),
+        "status": "running",
+        "diff_base_iid": prev_ingestion_id,
+        "resume_event": resume_event,
+        "ingestion_id": ingestion_id,
+    }
+
+    st.session_state.ingest_stop_event = stop_event
+    st.session_state.ingest_progress = new_progress
+
+    t = threading.Thread(
+        target=_run_ingestion,
+        args=(
+            repo_path, disk_path, github_url, prev_ingestion_id,
+            thread_id, stop_event, new_progress,
+            diff_highlights, diff_status_log, None,
+        ),
+        kwargs={
+            "existing_ingestion_id": ingestion_id,
+            "resume_mode": True,
+        },
         daemon=True,
     )
     st.session_state.ingest_thread = t
@@ -725,9 +800,32 @@ def _delete_and_start(pending: dict, del_ingestion_id: str) -> None:
     _start_ingestion(pending, prev_ingestion_id=None)
 
 
+def _get_ingest_status() -> str:
+    """Get the reconciled ingestion status, handling edge cases."""
+    thread: threading.Thread | None = st.session_state.ingest_thread
+    is_alive = thread is not None and thread.is_alive()
+    p = st.session_state.ingest_progress
+    status = p.get("status", "idle")
+
+    # Sync ingestion_id from progress dict (background thread sets it)
+    prog_iid = p.get("ingestion_id")
+    if prog_iid and st.session_state.ingest_ingestion_id != prog_iid:
+        st.session_state.ingest_ingestion_id = prog_iid
+
+    # Status reconciliation
+    if status == "stopping" and not is_alive:
+        status = "stopped"
+        p["status"] = "stopped"
+    elif is_alive and status not in ("running", "stopping", "awaiting_resume"):
+        status = "running"
+
+    return status
+
+
 # ── App ────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Dead Reckoning", layout="wide")
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 _init_state()
 
 
@@ -780,168 +878,241 @@ if st.session_state.pending_ingest:
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 
+status = _get_ingest_status()
+
 with st.sidebar:
     st.title("Dead Reckoning")
     st.caption("Navigate any codebase.")
-    st.divider()
 
-    ingest_source = st.text_input(
-        "Repo path or GitHub URL",
-        value="",
-        key="ingest_source_input",
-        placeholder="/path/to/repo  or  https://github.com/…",
-    )
-
-    thread: threading.Thread | None = st.session_state.ingest_thread
-    is_alive = thread is not None and thread.is_alive()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        ingest_clicked = st.button(
-            "Ingest", disabled=is_alive, use_container_width=True, type="primary"
-        )
-    with col2:
-        interrupt_clicked = st.button(
-            "Interrupt", disabled=not is_alive, use_container_width=True
+    # ── Expander 1: Ingestion ──────────────────────────────────────────
+    ingest_expanded = status not in ("done",)
+    with st.expander("Ingestion", expanded=ingest_expanded):
+        ingest_source = st.text_input(
+            "Repo path or GitHub URL",
+            value="",
+            key="ingest_source_input",
+            placeholder="/path/to/repo  or  https://github.com/…",
         )
 
-    # ── Ingest button logic ─────────────────────────────────────────────
-    if ingest_clicked:
-        source = ingest_source.strip()
-        if not source:
-            st.error("Please enter a repo path or GitHub URL.")
-        else:
-            if is_github_url(source):
-                try:
-                    disk_path, cleanup_fn = clone_repo(source)
-                    repo_path = source
-                    github_url = source
-                except RuntimeError as e:
-                    st.error(str(e))
-                    disk_path = None
-            else:
-                repo_path = source
-                disk_path = source
-                github_url = None
-                cleanup_fn = None
-
-            if disk_path:
-                existing = _check_existing_ingestions(repo_path)
-                pending = {
-                    "repo_path": repo_path,
-                    "disk_path": disk_path,
-                    "github_url": github_url,
-                    "cleanup_fn": cleanup_fn,
-                    "existing": existing,
-                }
-                if existing:
-                    st.session_state.pending_ingest = pending
-                    st.rerun()
+        # ── Single stateful button ─────────────────────────────────────
+        if status in ("idle", "done", "error"):
+            btn_clicked = st.button("Ingest", use_container_width=True, type="primary")
+            if btn_clicked:
+                source = ingest_source.strip()
+                if not source:
+                    st.error("Please enter a repo path or GitHub URL.")
                 else:
-                    _start_ingestion(pending, prev_ingestion_id=None)
-                    st.rerun()
+                    disk_path = None
+                    if is_github_url(source):
+                        try:
+                            disk_path, cleanup_fn = clone_repo(source)
+                            repo_path = source
+                            github_url = source
+                        except RuntimeError as e:
+                            st.error(str(e))
+                    else:
+                        repo_path = source
+                        disk_path = source
+                        github_url = None
+                        cleanup_fn = None
 
-    if interrupt_clicked:
-        if st.session_state.ingest_stop_event:
-            st.session_state.ingest_stop_event.set()
+                    if disk_path:
+                        existing = _check_existing_ingestions(repo_path)
+                        pending = {
+                            "repo_path": repo_path,
+                            "disk_path": disk_path,
+                            "github_url": github_url,
+                            "cleanup_fn": cleanup_fn,
+                            "existing": existing,
+                        }
+                        if existing:
+                            st.session_state.pending_ingest = pending
+                            st.rerun()
+                        else:
+                            # Clear old resume state for fresh ingest
+                            st.session_state.ingest_ingestion_id = None
+                            _start_ingestion(pending, prev_ingestion_id=None)
+                            st.rerun()
+
+        elif status in ("running", "awaiting_resume"):
+            if st.button("Pause", use_container_width=True):
+                if st.session_state.ingest_stop_event:
+                    st.session_state.ingest_stop_event.set()
+                p = st.session_state.ingest_progress
+                resume_ev = p.get("resume_event")
+                if resume_ev:
+                    resume_ev.set()  # unblock thread if waiting at diff review
+                p["status"] = "stopping"
+                st.rerun()
+
+        elif status == "stopped":
+            if st.button("Resume", use_container_width=True, type="primary"):
+                _resume_ingestion()
+                st.rerun()
+
+        elif status == "stopping":
+            st.button("Stopping…", use_container_width=True, disabled=True)
+
+        # ── Progress display ───────────────────────────────────────────
         p = st.session_state.ingest_progress
-        resume_ev = p.get("resume_event")
-        if resume_ev:
-            resume_ev.set()  # unblock thread if waiting at diff review
-        p["status"] = "stopping"
-        st.rerun()
+        processed = p.get("processed", 0)
+        total = p.get("total", 0)
 
-    # ── Repo / version selector ─────────────────────────────────────────
-    st.divider()
-    all_ingestions = _fetch_all_ingestions()
+        if status == "running":
+            label = f"Indexing… {processed} / {total or '?'} files"
+            st.info(label)
+            if total > 0:
+                st.progress(processed / total)
+        elif status == "awaiting_resume":
+            st.info("Diff ready — review the graph, then click Resume.")
+        elif status == "stopping":
+            st.warning(f"Stopping… {processed} / {total}")
+            if total > 0:
+                st.progress(processed / total)
+        elif status == "done":
+            st.success(f"Done — {processed} / {total} files indexed.")
+        elif status == "stopped":
+            st.warning(f"Paused at {processed} / {total} files.")
+        elif status == "error":
+            st.error(f"Error: {p.get('error', 'unknown')}")
+        else:
+            st.caption("Ready. Enter a repo path and click **Ingest**.")
 
-    if all_ingestions:
-        # Group by repo_path
-        repos_map: dict[str, list[dict]] = {}
-        for ing in all_ingestions:
-            rp = ing.get("repo_path", "")
-            repos_map.setdefault(rp, []).append(ing)
+        # ── Diff log ───────────────────────────────────────────────────
+        log = list(st.session_state.diff_status_log)
+        if log:
+            highlights = st.session_state.diff_highlights
+            if highlights:
+                n_green  = sum(1 for v in highlights.values() if v == "green")
+                n_yellow = sum(1 for v in highlights.values() if v == "yellow")
+                n_red    = sum(1 for v in highlights.values() if v == "red")
+                st.caption(
+                    f"Diff: {n_green} unchanged · {n_yellow} modified · {n_red} deleted"
+                )
+            with st.container(height=200):
+                for line in reversed(log[-100:]):
+                    st.caption(line)
 
-        repo_options = list(repos_map.keys())
+    # ── Expander 2: Node Details ───────────────────────────────────────
+    selected = st.session_state.get("selected_node_id")
+    with st.expander("Node Details", expanded=bool(selected)):
+        if selected:
+            detail = st.session_state.get("selected_node_detail")
+            if detail is None or detail.get("id") != selected:
+                try:
+                    detail = _fetch_node_detail(selected)
+                    st.session_state["selected_node_detail"] = detail
+                except Exception as exc:
+                    st.error(f"Could not load node: {exc}")
+                    detail = None
+            if detail:
+                _render_detail_panel_sidebar(detail)
+        else:
+            st.caption("Click a node in the graph to see details.")
 
-        def _repo_label(rp: str) -> str:
-            return os.path.basename(rp.rstrip("/")) or rp
+    # ── Expander 3: Settings & Legend ──────────────────────────────────
+    with st.expander("Settings & Legend", expanded=False):
+        # Repo / version selector
+        all_ingestions = _fetch_all_ingestions()
 
-        selected_repo = st.selectbox(
-            "Repo",
-            options=repo_options,
-            format_func=_repo_label,
-            key="repo_selector",
+        if all_ingestions:
+            repos_map: dict[str, list[dict]] = {}
+            for ing in all_ingestions:
+                rp = ing.get("repo_path", "")
+                repos_map.setdefault(rp, []).append(ing)
+
+            repo_options = list(repos_map.keys())
+
+            def _repo_label(rp: str) -> str:
+                return os.path.basename(rp.rstrip("/")) or rp
+
+            selected_repo = st.selectbox(
+                "Repo",
+                options=repo_options,
+                format_func=_repo_label,
+                key="repo_selector",
+            )
+
+            versions = repos_map.get(selected_repo, [])
+
+            # Build version options with "All versions" at top
+            all_versions_sentinel = {"id": "__all__", "_label": "All versions"}
+            version_options = [all_versions_sentinel] + versions
+
+            def _version_label(v: dict) -> str:
+                if v.get("id") == "__all__":
+                    return "All versions"
+                at = str(v.get("ingested_at", ""))[:19].replace("T", " ")
+                fc = v.get("file_count", "?")
+                return f"{at}  ({fc} files)"
+
+            selected_version = st.selectbox(
+                "Version",
+                options=version_options,
+                format_func=_version_label,
+                key="version_selector",
+            )
+
+            if selected_version:
+                if selected_version.get("id") == "__all__":
+                    if st.session_state.selected_ingestion_id is not None:
+                        st.session_state.selected_ingestion_id = None
+                        st.session_state.selected_repo_path = selected_repo
+                    st.caption("Showing all versions")
+                else:
+                    iid = str(selected_version["id"])
+                    if st.session_state.selected_ingestion_id != iid:
+                        st.session_state.selected_ingestion_id = iid
+                        st.session_state.selected_repo_path = selected_repo
+                    # Show thread_id as caption
+                    thread_id = st.session_state.get("ingest_thread_id", "")
+                    if thread_id:
+                        st.caption(f"Thread: `{thread_id}`")
+        else:
+            st.caption("No ingestions yet.")
+
+        st.divider()
+
+        # Auto-refresh
+        st.number_input(
+            "Auto-refresh (seconds)",
+            min_value=1, max_value=600, step=5,
+            key="graph_interval",
         )
 
-        versions = repos_map.get(selected_repo, [])
+        st.divider()
 
-        def _version_label(v: dict) -> str:
-            at = str(v.get("ingested_at", ""))[:19].replace("T", " ")
-            fc = v.get("file_count", "?")
-            return f"{at}  ({fc} files)"
-
-        selected_version = st.selectbox(
-            "Version",
-            options=versions,
-            format_func=_version_label,
-            key="version_selector",
-        )
-
-        if selected_version:
-            iid = str(selected_version["id"])
-            if st.session_state.selected_ingestion_id != iid:
-                st.session_state.selected_ingestion_id = iid
-                st.session_state.selected_repo_path = selected_repo
-    else:
-        st.caption("No ingestions yet.")
-
-    # ── Status display ──────────────────────────────────────────────────
-    st.divider()
-    p = st.session_state.ingest_progress
-    processed = p.get("processed", 0)
-    total = p.get("total", 0)
-    status = p.get("status", "idle")
-
-    if is_alive and status not in ("running", "stopping", "awaiting_resume"):
-        status = "running"
-
-    if status == "running":
-        label = f"Indexing… {processed} / {total or '?'} files"
-        st.info(label)
-        if total > 0:
-            st.progress(processed / total)
-    elif status == "awaiting_resume":
-        st.info("Diff ready — see graph panel to continue.")
-    elif status == "stopping":
-        st.warning(f"Stopping… {processed} / {total}")
-        if total > 0:
-            st.progress(processed / total)
-    elif status == "done":
-        st.success(f"Done — {processed} / {total} files indexed.")
-    elif status == "stopped":
-        st.warning(f"Interrupted at {processed} / {total} files.")
-    elif status == "error":
-        st.error(f"Error: {p.get('error', 'unknown')}")
-    else:
-        st.caption("Ready. Enter a repo path and click **Ingest**.")
-
-    st.divider()
-    with st.expander("Graph filters", expanded=False):
-        st.caption("Nodes")
+        # Graph filters
+        st.caption("**Node filters**")
         st.session_state.gf_repos      = st.checkbox("Repos",      value=st.session_state.gf_repos)
         st.session_state.gf_folders    = st.checkbox("Folders",    value=st.session_state.gf_folders)
         st.session_state.gf_files      = st.checkbox("Files",      value=st.session_state.gf_files)
         st.session_state.gf_functions  = st.checkbox("Functions",  value=st.session_state.gf_functions)
         st.session_state.gf_classes    = st.checkbox("Classes",    value=st.session_state.gf_classes)
-        st.caption("Edges")
+        st.caption("**Edge filters**")
         st.session_state.gf_structural = st.checkbox("Structural (contains / folder / repo)", value=st.session_state.gf_structural)
         st.session_state.gf_calls      = st.checkbox("Calls",      value=st.session_state.gf_calls)
 
-    st.divider()
-    st.caption("🔴 repo  🟠 folder  🔵 file  🟣 function  🟢 class  🟠→ calls")
-    if st.session_state.diff_highlights:
-        st.caption("🟢 unchanged  🟡 modified  🔴 deleted")
+        st.divider()
+
+        # Legend
+        st.caption("**Node types**")
+        st.markdown(
+            f'<span style="color:{REPO_COLOR}">&#9679;</span> Repo &nbsp; '
+            f'<span style="color:{FOLDER_COLOR}">&#9679;</span> Folder &nbsp; '
+            f'<span style="color:{FILE_COLOR}">&#9679;</span> File &nbsp; '
+            f'<span style="color:{FUNC_COLOR}">&#9679;</span> Function &nbsp; '
+            f'<span style="color:{CLASS_COLOR}">&#9679;</span> Class',
+            unsafe_allow_html=True,
+        )
+        if st.session_state.diff_highlights:
+            st.caption("**Diff**")
+            st.markdown(
+                f'<span style="color:{DIFF_COLORS["green"]}">&#9679;</span> Unchanged &nbsp; '
+                f'<span style="color:{DIFF_COLORS["yellow"]}">&#9679;</span> Modified &nbsp; '
+                f'<span style="color:{DIFF_COLORS["red"]}">&#9679;</span> Deleted',
+                unsafe_allow_html=True,
+            )
 
 
 # ── Main tabs ───────────────────────────────────────────────────────────────
@@ -957,7 +1128,6 @@ def _do_graph_refresh():
     p = st.session_state.ingest_progress
 
     # While re-ingesting with a diff base, pin the graph to the prev version
-    # so the diff_status colours on those nodes are visible.
     diff_base_iid = p.get("diff_base_iid") if _alive else None
     iid = diff_base_iid or st.session_state.get("selected_ingestion_id") or None
 
@@ -973,158 +1143,51 @@ def _do_graph_refresh():
         st.session_state.pop("graph_nodes", None)
 
 
-# ── Tab 1: Knowledge Graph ──────────────────────────────────────────────────
+# ── Tab 1: Knowledge Graph (full-width) ─────────────────────────────────────
 
 with tab_graph:
-    ctrl_col, freeze_col = st.columns([3, 2])
-    with ctrl_col:
-        refresh_clicked = st.button("Refresh graph", type="primary")
-    with freeze_col:
-        freeze = st.checkbox("Freeze layout", value=st.session_state.graph_frozen, key="graph_frozen")
-
-    if refresh_clicked:
-        try:
-            with st.spinner("Loading graph from SurrealDB…"):
-                st.session_state["graph_data_raw"] = _fetch_graph_data()
-            st.session_state.pop("graph_error", None)
-        except Exception as exc:
-            st.session_state["graph_error"] = str(exc)
-            st.session_state.pop("graph_data_raw", None)
-        st.rerun()
-
-    if "graph_error" in st.session_state:
-        st.error(f"Could not load graph: {st.session_state['graph_error']}")
-    elif "graph_data_raw" in st.session_state:
-        g_nodes, g_edges = _build_agraph(
-            *st.session_state["graph_data_raw"],
-            show_repos=st.session_state.gf_repos,
-            show_folders=st.session_state.gf_folders,
-            show_files=st.session_state.gf_files,
-            show_functions=st.session_state.gf_functions,
-            show_classes=st.session_state.gf_classes,
-            show_structural=st.session_state.gf_structural,
-            show_calls=st.session_state.gf_calls,
-        )
-        if g_nodes:
-            st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
-            cfg = Config(
-                width="100%",
-                height=620,
-                directed=True,
-                physics=not freeze,
-                hierarchical=False,
-            )
-            agraph(nodes=g_nodes, edges=g_edges, config=cfg)
-        else:
-            st.info("No nodes match the current filters.")
-    else:
-        st.info("Click **Refresh graph** to load the knowledge graph.")
-    st.number_input(
-        "Auto-refresh every (seconds)",
-        min_value=1, max_value=600, step=5,
-        key="graph_interval",
-    )
-
+    thread: threading.Thread | None = st.session_state.ingest_thread
+    is_alive = thread is not None and thread.is_alive()
     is_active = is_alive or bool(st.session_state.diff_highlights)
     run_every = 1 if is_active else st.session_state.graph_interval
 
     @st.fragment(run_every=run_every)
     def _graph_fragment():
-        graph_col, status_col = st.columns([7, 3])
+        btn_col, ts_col = st.columns([1, 5])
+        with btn_col:
+            st.button("Refresh now", type="primary")
+        with ts_col:
+            if st.session_state.get("graph_last_refreshed"):
+                st.caption(f"Last refreshed: {st.session_state['graph_last_refreshed']}")
 
-        with graph_col:
-            btn_col, ts_col = st.columns([1, 3])
-            with btn_col:
-                st.button("Refresh now", type="primary")
-            with ts_col:
-                if st.session_state.get("graph_last_refreshed"):
-                    st.caption(f"Last refreshed: {st.session_state['graph_last_refreshed']}")
+        _do_graph_refresh()
 
-            _do_graph_refresh()
+        if "graph_error" in st.session_state:
+            st.error(f"Could not load graph: {st.session_state['graph_error']}")
+        elif "graph_nodes" in st.session_state:
+            g_nodes = st.session_state["graph_nodes"]
+            g_edges = st.session_state["graph_edges"]
+            if g_nodes:
+                st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
+                cfg = Config(
+                    width="100%", height=700,
+                    directed=True, physics=True, hierarchical=False,
+                )
+                clicked_node = agraph(nodes=g_nodes, edges=g_edges, config=cfg)
+                if clicked_node and clicked_node != st.session_state.get("selected_node_id"):
+                    st.session_state["selected_node_id"] = clicked_node
+                    st.session_state["selected_node_detail"] = None
+                    st.rerun(scope="app")
+            else:
+                st.info("No nodes yet — select a version or run ingestion.")
 
-            if "graph_error" in st.session_state:
-                st.error(f"Could not load graph: {st.session_state['graph_error']}")
-            elif "graph_nodes" in st.session_state:
-                g_nodes = st.session_state["graph_nodes"]
-                g_edges = st.session_state["graph_edges"]
-                if g_nodes:
-                    st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
-                    cfg = Config(
-                        width="100%", height=540,
-                        directed=True, physics=True, hierarchical=False,
-                    )
-                    clicked_node = agraph(nodes=g_nodes, edges=g_edges, config=cfg)
-                    if clicked_node and clicked_node != st.session_state.get("selected_node_id"):
-                        st.session_state["selected_node_id"] = clicked_node
-                        st.session_state["selected_node_detail"] = None
-                else:
-                    st.info("No nodes yet — select a version or run ingestion.")
-
-        with status_col:
-            st.subheader("Ingestion Status")
-
-            _thread: threading.Thread | None = st.session_state.get("ingest_thread")
-            _alive = _thread is not None and _thread.is_alive()
-            p = st.session_state.ingest_progress
-            _status = p.get("status", "idle")
-            if _alive and _status not in ("running", "stopping"):
-                _status = "running"
-
-            if _status == "running":
-                _processed = p.get("processed", 0)
-                _total = p.get("total", 0)
-                if _total:
-                    st.progress(_processed / _total, text=f"{_processed}/{_total} files")
-                else:
-                    st.write("Starting…")
-            elif _status == "awaiting_resume":
-                st.info("Diff computed — review the coloured graph, then continue.")
-                if st.button("Continue ingestion ▶", type="primary", use_container_width=True):
-                    st.session_state.ingest_progress["resume_event"].set()
-                    st.session_state.ingest_progress["status"] = "running"
-                    st.rerun(scope="fragment")
-            elif _status == "done":
-                st.success("Ingestion complete.")
-            elif _status == "error":
-                st.error(p.get("error", "Unknown error"))
-
-            log = list(st.session_state.diff_status_log)
-            if log:
-                highlights = st.session_state.diff_highlights
-                if highlights:
-                    n_green  = sum(1 for v in highlights.values() if v == "green")
-                    n_yellow = sum(1 for v in highlights.values() if v == "yellow")
-                    n_red    = sum(1 for v in highlights.values() if v == "red")
-                    st.caption(
-                        f"Diff: {n_green} unchanged · {n_yellow} modified · {n_red} deleted"
-                    )
-
-                with st.container(height=440):
-                    for line in reversed(log[-200:]):
-                        st.caption(line)
-
-            # When the background thread finishes, trigger a full page rerun so
-            # the sidebar status and version selector both update.
-            # Use a flag to fire exactly once per completion event.
-            if _alive:
-                st.session_state["_ingestion_was_running"] = True
-            elif st.session_state.pop("_ingestion_was_running", False):
-                st.rerun(scope="app")
-
-        # ── Node detail panel (inside fragment so it updates on click) ──
-        selected = st.session_state.get("selected_node_id")
-        if selected:
-            st.divider()
-            detail = st.session_state.get("selected_node_detail")
-            if detail is None or detail.get("id") != selected:
-                try:
-                    detail = _fetch_node_detail(selected)
-                    st.session_state["selected_node_detail"] = detail
-                except Exception as exc:
-                    st.error(f"Could not load node detail: {exc}")
-                    detail = None
-            if detail:
-                _render_detail_panel(detail)
+        # When the background thread finishes, trigger a full page rerun
+        _thread: threading.Thread | None = st.session_state.get("ingest_thread")
+        _alive = _thread is not None and _thread.is_alive()
+        if _alive:
+            st.session_state["_ingestion_was_running"] = True
+        elif st.session_state.pop("_ingestion_was_running", False):
+            st.rerun(scope="app")
 
     _graph_fragment()
 
