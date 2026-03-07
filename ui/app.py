@@ -11,6 +11,7 @@ from agent.ingest_graph import build_ingestion_agent
 from ingestion.loader import get_db_client
 
 # ── Colours ────────────────────────────────────────────────────────────────
+REPO_COLOR   = "#E74C3C"  # red
 FOLDER_COLOR = "#F39C12"  # orange
 FILE_COLOR = "#4C8BF5"   # blue
 FUNC_COLOR = "#9B59B6"   # purple
@@ -69,13 +70,15 @@ def _run_ingestion(
 def _fetch_graph_data() -> tuple:
     async def _query():
         async with get_db_client() as db:
+            repos = await db.query("SELECT id, name FROM repo LIMIT 100")
             folders = await db.query("SELECT id, path FROM folder LIMIT 5000")
             files = await db.query("SELECT id, path FROM file LIMIT 5000")
             fns = await db.query("SELECT id, name FROM `function` LIMIT 5000")
             classes = await db.query("SELECT id, name FROM `class` LIMIT 5000")
             contains_edges = await db.query("SELECT in, out FROM contains LIMIT 5000")
             folder_edges = await db.query("SELECT in, out FROM in_folder LIMIT 5000")
-        return folders, files, fns, classes, contains_edges, folder_edges
+            repo_edges = await db.query("SELECT in, out FROM in_repo LIMIT 5000")
+        return repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges
 
     return asyncio.run(_query())
 
@@ -89,10 +92,17 @@ def _get_rows(result) -> list:
     return []
 
 
-def _build_agraph(folders, files, fns, classes, contains_raw, folder_edges_raw) -> tuple[list, list]:
+def _build_agraph(repos, folders, files, fns, classes, contains_raw, folder_edges_raw, repo_edges_raw) -> tuple[list, list]:
     nodes: list[Node] = []
     edges: list[Edge] = []
     seen: set[str] = set()
+
+    for row in _get_rows(repos):
+        nid = str(row.get("id", ""))
+        label = str(row.get("name", ""))
+        if nid and nid not in seen:
+            nodes.append(Node(id=nid, label=label, color=REPO_COLOR, size=35))
+            seen.add(nid)
 
     for row in _get_rows(folders):
         nid = str(row.get("id", ""))
@@ -129,6 +139,12 @@ def _build_agraph(folders, files, fns, classes, contains_raw, folder_edges_raw) 
             edges.append(Edge(source=src, target=dst))
 
     for row in _get_rows(folder_edges_raw):
+        src = str(row.get("in", ""))
+        dst = str(row.get("out", ""))
+        if src and dst and src in seen and dst in seen:
+            edges.append(Edge(source=src, target=dst))
+
+    for row in _get_rows(repo_edges_raw):
         src = str(row.get("in", ""))
         dst = str(row.get("out", ""))
         if src and dst and src in seen and dst in seen:
@@ -249,7 +265,7 @@ with st.sidebar:
         st.caption("Ready. Enter a repo path and click **Ingest**.")
 
     st.divider()
-    st.caption("🟠 folder  🔵 file  🟣 function  🟢 class")
+    st.caption("🔴 repo  🟠 folder  🔵 file  🟣 function  🟢 class")
 
 
 # ── Main tabs ──────────────────────────────────────────────────────────────
@@ -261,8 +277,8 @@ with tab_graph:
     if st.button("Refresh graph", type="primary"):
         try:
             with st.spinner("Loading graph from SurrealDB…"):
-                folders, files, fns, classes, contains_edges, folder_edges = _fetch_graph_data()
-            nodes, edges = _build_agraph(folders, files, fns, classes, contains_edges, folder_edges)
+                repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges = _fetch_graph_data()
+            nodes, edges = _build_agraph(repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges)
             st.session_state["graph_nodes"] = nodes
             st.session_state["graph_edges"] = edges
             st.session_state.pop("graph_error", None)
