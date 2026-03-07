@@ -9,12 +9,13 @@ DEFINE INDEX IF NOT EXISTS file_path_idx ON file FIELDS path UNIQUE;
 
 -- FUNCTION: a named function or method
 DEFINE TABLE IF NOT EXISTS `function` SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS name      ON `function` TYPE string;
-DEFINE FIELD IF NOT EXISTS file      ON `function` TYPE record<file>;
-DEFINE FIELD IF NOT EXISTS lineno    ON `function` TYPE int;
-DEFINE FIELD IF NOT EXISTS docstring ON `function` TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS embedding ON `function` TYPE option<array>;
-DEFINE FIELD IF NOT EXISTS is_method ON `function` TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS name         ON `function` TYPE string;
+DEFINE FIELD IF NOT EXISTS file         ON `function` TYPE record<file>;
+DEFINE FIELD IF NOT EXISTS lineno       ON `function` TYPE int;
+DEFINE FIELD IF NOT EXISTS docstring    ON `function` TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS has_docstring ON `function` TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS embedding    ON `function` TYPE option<array>;
+DEFINE FIELD IF NOT EXISTS is_method    ON `function` TYPE bool DEFAULT false;
 
 DEFINE INDEX IF NOT EXISTS fn_name_file_idx ON `function` FIELDS name, file UNIQUE;
 

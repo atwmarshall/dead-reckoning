@@ -98,9 +98,10 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
             """UPSERT type::record('function', $id) SET
                name = $name, file = type::record('file', $fid),
                lineno = $lineno, docstring = $docstring, is_method = false,
-               embedding = $embedding""",
+               has_docstring = $has_docstring, embedding = $embedding""",
             {"id": fnid, "name": fn["name"], "fid": fid,
              "lineno": fn["lineno"], "docstring": fn.get("docstring"),
+             "has_docstring": bool(fn.get("docstring")),
              "embedding": embeddings_map.get(idx)},
         )
         eid = _edge_id(fid, "contains", fnid)
