@@ -8,17 +8,18 @@ from langgraph_checkpoint_surrealdb import SurrealSaver
 from surrealdb import AsyncSurreal
 
 from agent.state import AgentState
-from agent.tools import explain_module, find_callers, get_dependencies, semantic_search
+from agent.tools import explain_module, find_callers, get_dependencies, hybrid_search
 
 load_dotenv()
 
-TOOLS = [semantic_search, explain_module, get_dependencies, find_callers]
+TOOLS = [hybrid_search, explain_module, get_dependencies, find_callers]
 
 SYSTEM_PROMPT = (
-    "You are a codebase assistant. "
-    "For every question: first call semantic_search with the key term, "
-    "then call explain_module with the matching partial filename if you need more detail. "
-    "Never answer without calling at least one tool first."
+    "You are a codebase assistant. Answer questions strictly using what the tools return. "
+    "Do not use prior knowledge or training data — if the tools do not return enough information, say so. "
+    "For every question: first call hybrid_search with the key term. "
+    "If a result is marked undocumented, state that clearly and describe only what the graph context (class, siblings, file) implies. "
+    "Never invent behaviour, signatures, or examples not found in tool results."
 )
 
 

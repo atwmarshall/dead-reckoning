@@ -10,12 +10,13 @@ def parse_file(path: str) -> dict:
     classes = []
     imports = []
 
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             functions.append({
                 "name": node.name,
                 "lineno": node.lineno,
                 "docstring": ast.get_docstring(node),
+                "class_name": None,
             })
 
         elif isinstance(node, ast.ClassDef):
@@ -30,11 +31,19 @@ def parse_file(path: str) -> dict:
                 "lineno": node.lineno,
                 "bases": bases,
             })
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    functions.append({
+                        "name": child.name,
+                        "lineno": child.lineno,
+                        "docstring": ast.get_docstring(child),
+                        "class_name": node.name,
+                    })
 
-        elif isinstance(node, ast.Import):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
-
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 imports.append(node.module)
@@ -44,7 +53,7 @@ def parse_file(path: str) -> dict:
         "line_count": len(source.splitlines()),
         "functions": functions,
         "classes": classes,
-        "imports": list(dict.fromkeys(imports)),  # deduplicate, preserve order
+        "imports": list(dict.fromkeys(imports)),
     }
 
 
@@ -69,5 +78,5 @@ def parse_repo(repo_path: str) -> list[dict]:
         try:
             results.append(parse_file(str(py_file)))
         except SyntaxError:
-            pass  # skip files that can't be parsed
+            pass
     return results

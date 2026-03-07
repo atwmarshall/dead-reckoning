@@ -26,8 +26,8 @@ def _file_id(path: str) -> str:
     return hashlib.md5(path.encode()).hexdigest()[:12]
 
 
-def _function_id(file_path: str, fn_name: str) -> str:
-    return hashlib.md5(f"{file_path}::{fn_name}".encode()).hexdigest()[:12]
+def _function_id(file_path: str, class_name: str | None, fn_name: str) -> str:
+    return hashlib.md5(f"{file_path}::{class_name or ''}::{fn_name}".encode()).hexdigest()[:12]
 
 
 def _class_id(file_path: str, class_name: str) -> str:
@@ -111,15 +111,25 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
 
     # Upsert functions + contains edges
     for idx, fn in enumerate(parsed["functions"]):
-        fnid = _function_id(path, fn["name"])
+        class_name = fn.get("class_name")
+        fnid = _function_id(path, class_name, fn["name"])
         await db.query(
             """UPSERT type::record('function', $id) SET
                name = $name, file = type::record('file', $fid),
-               lineno = $lineno, docstring = $docstring, is_method = false,
-               embedding = $embedding""",
-            {"id": fnid, "name": fn["name"], "fid": fid,
-             "lineno": fn["lineno"], "docstring": fn.get("docstring"),
-             "embedding": embeddings_map.get(idx)},
+               lineno = $lineno, docstring = $docstring,
+               has_docstring = $has_docstring, class_name = $class_name,
+               is_method = $is_method, embedding = $embedding""",
+            {
+                "id": fnid,
+                "name": fn["name"],
+                "fid": fid,
+                "lineno": fn["lineno"],
+                "docstring": fn.get("docstring"),
+                "has_docstring": bool(fn.get("docstring")),
+                "class_name": class_name,
+                "is_method": class_name is not None,
+                "embedding": embeddings_map.get(idx),
+            },
         )
         eid = _edge_id(fid, "contains", fnid)
         await db.query(
