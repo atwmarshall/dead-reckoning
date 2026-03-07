@@ -10,7 +10,8 @@ from langgraph_checkpoint_surrealdb import SurrealSaver
 from typing_extensions import TypedDict
 
 from agent.graph import _ensure_checkpoint_tables
-from ingestion.loader import get_db_client, load_file
+from ingestion.diff import content_hash_file
+from ingestion.loader import finalize_ingestion, get_db_client, load_file
 from ingestion.parser import parse_file, parse_repo
 
 load_dotenv()
@@ -18,7 +19,9 @@ load_dotenv()
 
 class IngestionState(TypedDict):
     messages: Annotated[list, add_messages]
-    repo_path: str
+    repo_path: str      # canonical identifier stored in DB (URL or local path)
+    disk_path: str      # actual filesystem path used for parsing (same as repo_path for local)
+    ingestion_id: str
     all_files: list[str]
     processed_files: list[str]
     current_file: str
@@ -28,7 +31,8 @@ def _initialize(state: IngestionState) -> dict:
     """Populate all_files from the repo on first run. No-op on resume."""
     if state.get("all_files"):
         return {}
-    parsed = parse_repo(state["repo_path"])
+    disk = state.get("disk_path") or state["repo_path"]
+    parsed = parse_repo(disk)
     all_files = [p["path"] for p in parsed]
     print(f"Found {len(all_files)} files to ingest.")
     return {"all_files": all_files, "processed_files": [], "current_file": ""}
@@ -42,11 +46,24 @@ def _process_file(state: IngestionState) -> dict:
         return {}
 
     current = remaining[0]
+    ingestion_id = state.get("ingestion_id", "")
+
     parsed = parse_file(current)
+
+    try:
+        content_hash = content_hash_file(current)
+    except OSError:
+        content_hash = None
 
     async def _load():
         async with get_db_client() as db:
-            await load_file(parsed, db, repo_path=state["repo_path"])
+            await load_file(
+                parsed,
+                db,
+                repo_path=state["repo_path"],
+                ingestion_id=ingestion_id,
+                content_hash=content_hash,
+            )
 
     asyncio.run(_load())
 
@@ -57,10 +74,27 @@ def _process_file(state: IngestionState) -> dict:
     return {"processed_files": new_processed, "current_file": current}
 
 
+def _finalize(state: IngestionState) -> dict:
+    """Mark the ingestion record as done."""
+    ingestion_id = state.get("ingestion_id", "")
+    if not ingestion_id:
+        return {}
+
+    file_count = len(state.get("processed_files") or [])
+
+    async def _do_finalize():
+        async with get_db_client() as db:
+            await finalize_ingestion(db, ingestion_id, file_count)
+
+    asyncio.run(_do_finalize())
+    print(f"Ingestion {ingestion_id} finalized: {file_count} files.")
+    return {}
+
+
 def _has_more(state: IngestionState) -> str:
     processed = set(state.get("processed_files") or [])
     remaining = [f for f in (state.get("all_files") or []) if f not in processed]
-    return "process_file" if remaining else END
+    return "process_file" if remaining else "finalize"
 
 
 def build_ingestion_agent():
@@ -78,8 +112,16 @@ def build_ingestion_agent():
     graph = StateGraph(IngestionState)
     graph.add_node("initialize", _initialize)
     graph.add_node("process_file", _process_file)
+    graph.add_node("finalize", _finalize)
     graph.set_entry_point("initialize")
-    graph.add_conditional_edges("initialize", _has_more, {"process_file": "process_file", END: END})
-    graph.add_conditional_edges("process_file", _has_more, {"process_file": "process_file", END: END})
+    graph.add_conditional_edges(
+        "initialize", _has_more,
+        {"process_file": "process_file", "finalize": "finalize"},
+    )
+    graph.add_conditional_edges(
+        "process_file", _has_more,
+        {"process_file": "process_file", "finalize": "finalize"},
+    )
+    graph.add_edge("finalize", END)
 
     return graph.compile(checkpointer=checkpointer)
