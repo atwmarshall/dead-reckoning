@@ -50,9 +50,24 @@ def parse_file(path: str) -> dict:
 
 def _dotted(node: ast.Attribute) -> str:
     parts = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
     return ".".join(reversed(parts))
+
+
+def parse_repo(repo_path: str) -> list[dict]:
+    skip = {"__pycache__", ".git", "venv", ".venv", "node_modules", ".tox"}
+    root = Path(repo_path)
+    results = []
+    for py_file in sorted(root.rglob("*.py")):
+        if any(part in skip for part in py_file.parts):
+            continue
+        try:
+            results.append(parse_file(str(py_file)))
+        except SyntaxError:
+            pass  # skip files that can't be parsed
+    return results
