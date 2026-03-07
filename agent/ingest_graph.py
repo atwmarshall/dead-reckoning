@@ -12,7 +12,7 @@ from typing_extensions import TypedDict
 
 from agent.graph import _ensure_checkpoint_tables
 from ingestion.diff import content_hash_file
-from ingestion.loader import finalize_ingestion, get_db_client, load_file
+from ingestion.loader import finalize_ingestion, get_db_client, load_calls, load_file
 from ingestion.parser import parse_file, parse_repo
 
 load_dotenv()
@@ -106,7 +106,21 @@ def _review_diff(state: IngestionState) -> dict:
 def _has_more(state: IngestionState) -> str:
     processed = set(state.get("processed_files") or [])
     remaining = [f for f in (state.get("all_files") or []) if f not in processed]
-    return "process_file" if remaining else "finalize"
+    return "process_file" if remaining else "create_call_edges"
+
+
+def _create_call_edges(state: IngestionState) -> dict:
+    """Second-pass node: create calls edges after all files are ingested."""
+    disk = state.get("disk_path") or state["repo_path"]
+    parsed_files = parse_repo(disk)
+
+    async def _load():
+        async with get_db_client() as db:
+            return await load_calls(parsed_files, db)
+
+    count = asyncio.run(_load())
+    print(f"Call edges created: {count}")
+    return {}
 
 
 def build_ingestion_agent():
@@ -125,17 +139,19 @@ def build_ingestion_agent():
     graph.add_node("initialize", _initialize)
     graph.add_node("review_diff", _review_diff)
     graph.add_node("process_file", _process_file)
+    graph.add_node("create_call_edges", _create_call_edges)
     graph.add_node("finalize", _finalize)
     graph.set_entry_point("initialize")
     graph.add_edge("initialize", "review_diff")
     graph.add_conditional_edges(
         "review_diff", _has_more,
-        {"process_file": "process_file", "finalize": "finalize"},
+        {"process_file": "process_file", "create_call_edges": "create_call_edges"},
     )
     graph.add_conditional_edges(
         "process_file", _has_more,
-        {"process_file": "process_file", "finalize": "finalize"},
+        {"process_file": "process_file", "create_call_edges": "create_call_edges"},
     )
+    graph.add_edge("create_call_edges", "finalize")
     graph.add_edge("finalize", END)
 
     return graph.compile(checkpointer=checkpointer)

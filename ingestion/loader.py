@@ -332,3 +332,57 @@ async def load_file(
         edge_count += 1
 
     return {"functions": fn_count, "classes": class_count, "edges": edge_count}
+
+
+# ---------------------------------------------------------------------------
+# Second-pass: create calls edges across all ingested files
+# ---------------------------------------------------------------------------
+
+async def load_calls(parsed_files: list[dict], db: AsyncSurreal) -> int:
+    """Create function→calls→function edges for all parsed files (second pass).
+
+    Must be called after all files are loaded so callee nodes already exist.
+    Returns the number of edges created.
+    """
+    # Collect all unique callee names referenced across every function
+    all_callee_names: set[str] = set()
+    for parsed in parsed_files:
+        for fn in parsed.get("functions", []):
+            all_callee_names.update(fn.get("calls") or [])
+
+    if not all_callee_names:
+        return 0
+
+    # Batch-fetch all function nodes whose names match any callee
+    rows = await db.query(
+        "SELECT id, name FROM `function` WHERE name IN $names",
+        {"names": list(all_callee_names)},
+    )
+    # Unwrap SurrealDB response format
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "result" in rows[0]:
+        rows = rows[0].get("result") or []
+
+    # Build name → list of bare record IDs (strip "function:abc123" → "abc123")
+    callee_map: dict[str, list[str]] = {}
+    for row in (rows or []):
+        name = row.get("name")
+        rid = str(row.get("id", ""))
+        bare = rid.split(":")[-1] if ":" in rid else rid
+        if name and bare:
+            callee_map.setdefault(name, []).append(bare)
+
+    edge_count = 0
+    for parsed in parsed_files:
+        file_path = parsed["path"]
+        for fn in parsed.get("functions", []):
+            caller_bare = _function_id(file_path, fn.get("class_name"), fn["name"])
+            for callee_name in (fn.get("calls") or []):
+                for callee_bare in callee_map.get(callee_name, []):
+                    eid = _edge_id(caller_bare, "calls", callee_bare)
+                    await db.query(
+                        "INSERT RELATION INTO calls { id: type::record('calls', $eid), in: type::record('function', $caller), out: type::record('function', $callee) } ON DUPLICATE KEY UPDATE in = in",
+                        {"eid": eid, "caller": caller_bare, "callee": callee_bare},
+                    )
+                    edge_count += 1
+
+    return edge_count
