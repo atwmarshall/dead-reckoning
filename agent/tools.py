@@ -46,7 +46,7 @@ class DeadReckoningRetriever:
 
     async def _semantic(self, vec: list[float]) -> list[dict]:
         rows = await _query(
-            """SELECT id, name, docstring, has_docstring, file.path AS path,
+            """SELECT id, name, lineno, docstring, has_docstring, file.path AS path,
                vector::similarity::cosine(embedding, $vec) AS score
                FROM `function`
                WHERE embedding IS NOT NONE
@@ -64,7 +64,7 @@ class DeadReckoningRetriever:
         )
         vars = {f"t{i}": term for i, term in enumerate(terms)}
         rows = await _query(
-            f"""SELECT id, name, docstring, has_docstring, file.path AS path
+            f"""SELECT id, name, lineno, docstring, has_docstring, file.path AS path
                 FROM `function`
                 WHERE {conditions}
                 LIMIT 10""",
@@ -82,6 +82,33 @@ class DeadReckoningRetriever:
                 docs[key] = doc
         return [docs[k] for k in sorted(docs, key=lambda k: scores[k], reverse=True)]
 
+    async def _enrich(self, doc: dict) -> dict:
+        """Add graph context: inferred parent class and sibling function names."""
+        path = doc.get("path")
+        lineno = doc.get("lineno")
+        name = doc.get("name")
+        if not path:
+            return doc
+
+        parent_class, siblings = await asyncio.gather(
+            _query(
+                """SELECT name, bases FROM `class`
+                   WHERE file.path = $path AND lineno < $lineno
+                   ORDER BY lineno DESC LIMIT 1""",
+                {"path": path, "lineno": lineno or 0},
+            ),
+            _query(
+                """SELECT name FROM `function`
+                   WHERE file.path = $path AND name != $name
+                   LIMIT 8""",
+                {"path": path, "name": name},
+            ),
+        )
+
+        doc["_parent_class"] = (parent_class or [{}])[0] or {}
+        doc["_siblings"] = [r.get("name") for r in (siblings or []) if r.get("name")]
+        return doc
+
     @staticmethod
     def _format(doc: dict) -> str:
         name = doc.get("name", "?")
@@ -89,7 +116,20 @@ class DeadReckoningRetriever:
         docstring = doc.get("docstring")
         tag = "" if doc.get("has_docstring", bool(docstring)) else " [undocumented]"
         detail = docstring or "(no docstring)"
-        return f"{name} ({path}){tag}: {detail}"
+
+        parts = [f"{name} ({path}){tag}: {detail}"]
+
+        parent = doc.get("_parent_class") or {}
+        if parent.get("name"):
+            bases = ", ".join(parent.get("bases") or [])
+            cls_str = parent["name"] + (f"({bases})" if bases else "")
+            parts.append(f"  class: {cls_str}")
+
+        siblings = doc.get("_siblings") or []
+        if siblings:
+            parts.append(f"  siblings: {', '.join(siblings)}")
+
+        return "\n".join(parts)
 
     async def retrieve(self, query: str) -> list[str]:
         terms = self._extract_terms(query)
@@ -98,8 +138,9 @@ class DeadReckoningRetriever:
             self._semantic(vec),
             self._keyword(terms),
         )
-        merged = self._rrf_merge(semantic_results, keyword_results)
-        return [self._format(doc) for doc in merged[: self.limit]]
+        merged = self._rrf_merge(semantic_results, keyword_results)[: self.limit]
+        enriched = await asyncio.gather(*[self._enrich(doc) for doc in merged])
+        return [self._format(doc) for doc in enriched]
 
 
 _retriever = DeadReckoningRetriever()
