@@ -12,7 +12,14 @@ from agent.tools import explain_module, find_callers, get_dependencies, semantic
 
 load_dotenv()
 
-TOOLS = [get_dependencies, find_callers, semantic_search, explain_module]
+TOOLS = [semantic_search, explain_module, get_dependencies, find_callers]
+
+SYSTEM_PROMPT = (
+    "You are a codebase assistant. "
+    "For every question: first call semantic_search with the key term, "
+    "then call explain_module with the matching partial filename if you need more detail. "
+    "Never answer without calling at least one tool first."
+)
 
 
 async def _ensure_checkpoint_tables() -> None:
@@ -37,7 +44,8 @@ def _llm_node(state: AgentState) -> dict:
     if "gpt-oss" in model:
         kwargs["model_kwargs"] = {"think": False}
     llm = ChatOllama(**kwargs).bind_tools(TOOLS)
-    response = llm.invoke(state["messages"])
+    messages = [("system", SYSTEM_PROMPT)] + list(state["messages"])
+    response = llm.invoke(messages)
     return {"messages": [response]}
 
 
