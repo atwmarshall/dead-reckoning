@@ -68,8 +68,11 @@ cp .env.example .env
 # 4. Apply SurrealDB schema (one-time setup)
 uv run python ingestion/apply_schema.py
 
-# 5. Ingest a repo
-uv run python ingestion/seed.py --repo /path/to/any/python/repo
+# 5. Ingest a repo (replace with a real path to a Python repo)
+uv run python ingestion/seed.py --repo /path/to/your/python/repo
+
+# Example: index this repo itself
+uv run python ingestion/seed.py --repo .
 
 # 6. Run the UI
 uv run streamlit run ui/app.py
@@ -79,7 +82,7 @@ uv run streamlit run ui/app.py
 ```bash
 # Start ingestion, kill it partway through (Ctrl-C), then re-run the same command.
 # It resumes from the last checkpoint — already-processed files are skipped.
-uv run python ingestion/seed.py --repo /path/to/any/python/repo
+uv run python ingestion/seed.py --repo /path/to/your/python/repo
 ```
 
 ---
