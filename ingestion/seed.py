@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 
-from ingestion.loader import get_db_client, load_file
+from ingestion.loader import get_db_client, load_calls, load_file
 from ingestion.parser import parse_repo
 
 
@@ -20,11 +20,16 @@ async def seed(repo_path: str) -> None:
             for k in totals:
                 totals[k] += counts[k]
 
+    print("Creating call edges ...")
+    async with get_db_client() as db:
+        call_edges = await load_calls(files, db)
+
     print(
         f"\nDone. Files processed: {total} | "
         f"Functions processed: {totals['functions']} | "
         f"Classes processed: {totals['classes']} | "
-        f"Edges processed: {totals['edges']} "
+        f"Edges processed: {totals['edges']} | "
+        f"Call edges: {call_edges} "
         f"(DB deduplicates by name+file — stored count will be lower)"
     )
 
