@@ -72,13 +72,16 @@ class DeadReckoningRetriever:
         )
         return rows or []
 
-    def _rrf_merge(self, *ranked_lists: list[dict]) -> list[dict]:
+    def _rrf_merge(self, *ranked_lists: list[dict], exact_terms: set[str] | None = None) -> list[dict]:
         scores: dict[str, float] = {}
         docs: dict[str, dict] = {}
         for ranked in ranked_lists:
             for rank, doc in enumerate(ranked):
                 key = str(doc.get("id") or f"{doc.get('name')}::{doc.get('path')}")
                 scores[key] = scores.get(key, 0.0) + 1.0 / (self.k + rank + 1)
+                # Boost exact name matches so they always beat semantic coincidences
+                if exact_terms and doc.get("name", "").lower() in exact_terms:
+                    scores[key] += 1.0 / self.k
                 docs[key] = doc
         return [docs[k] for k in sorted(docs, key=lambda k: scores[k], reverse=True)]
 
@@ -92,7 +95,7 @@ class DeadReckoningRetriever:
 
         parent_class, siblings = await asyncio.gather(
             _query(
-                """SELECT name, bases FROM `class`
+                """SELECT name, bases, lineno FROM `class`
                    WHERE file.path = $path AND lineno < $lineno
                    ORDER BY lineno DESC LIMIT 1""",
                 {"path": path, "lineno": lineno or 0},
@@ -138,7 +141,7 @@ class DeadReckoningRetriever:
             self._semantic(vec),
             self._keyword(terms),
         )
-        merged = self._rrf_merge(semantic_results, keyword_results)[: self.limit]
+        merged = self._rrf_merge(semantic_results, keyword_results, exact_terms=set(terms))[: self.limit]
         enriched = await asyncio.gather(*[self._enrich(doc) for doc in merged])
         return [self._format(doc) for doc in enriched]
 
