@@ -254,24 +254,21 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
             nodes.append(Node(id=nid, label=label, color=FILE_COLOR, size=20))
             seen.add(nid)
 
+    # Retrieved nodes: same size as knowledge graph, gold font to highlight
     for row in fn_rows:
         nid = str(row.get("id", ""))
         label = str(row.get("name", ""))
         if nid and nid not in seen:
-            nodes.append(Node(
-                id=nid, label=label, color=FUNC_COLOR, size=20,
-                font={"color": "#FFD700", "size": 14, "strokeWidth": 3, "strokeColor": "#000000"},
-            ))
+            nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12,
+                              font={"color": "#FFD700"}))
             seen.add(nid)
 
     for row in class_rows:
         nid = str(row.get("id", ""))
         label = str(row.get("name", ""))
         if nid and nid not in seen:
-            nodes.append(Node(
-                id=nid, label=label, color=CLASS_COLOR, size=22,
-                font={"color": "#FFD700", "size": 14, "strokeWidth": 3, "strokeColor": "#000000"},
-            ))
+            nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15,
+                              font={"color": "#FFD700"}))
             seen.add(nid)
 
     if one_hop:
@@ -279,14 +276,14 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=10))
+                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
                 seen.add(nid)
 
         for row in hop_class_rows:
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=11))
+                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
                 seen.add(nid)
 
     for row in contains_rows:
