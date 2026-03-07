@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from dotenv import load_dotenv
+from langchain_ollama import OllamaEmbeddings
 from surrealdb import AsyncSurreal
 
 load_dotenv()
@@ -70,15 +71,29 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
     class_count = 0
     edge_count = 0
 
+    # Batch-embed function docstrings
+    embeddings_model = OllamaEmbeddings(
+        model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+    )
+    fns_with_docs = [(i, fn) for i, fn in enumerate(parsed["functions"]) if fn.get("docstring")]
+    embeddings_map: dict[int, list[float]] = {}
+    if fns_with_docs:
+        docs = [fn["docstring"] for _, fn in fns_with_docs]
+        vecs = embeddings_model.embed_documents(docs)
+        embeddings_map = {i: vec for (i, _), vec in zip(fns_with_docs, vecs)}
+
     # Upsert functions + contains edges
-    for fn in parsed["functions"]:
+    for idx, fn in enumerate(parsed["functions"]):
         fnid = _function_id(path, fn["name"])
         await db.query(
             """UPSERT type::record('function', $id) SET
                name = $name, file = type::record('file', $fid),
-               lineno = $lineno, docstring = $docstring, is_method = false""",
+               lineno = $lineno, docstring = $docstring, is_method = false,
+               embedding = $embedding""",
             {"id": fnid, "name": fn["name"], "fid": fid,
-             "lineno": fn["lineno"], "docstring": fn.get("docstring")},
+             "lineno": fn["lineno"], "docstring": fn.get("docstring"),
+             "embedding": embeddings_map.get(idx)},
         )
         eid = _edge_id(fid, "contains", fnid)
         await db.query(
