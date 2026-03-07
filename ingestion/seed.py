@@ -21,10 +21,11 @@ async def seed(repo_path: str) -> None:
                 totals[k] += counts[k]
 
     print(
-        f"\nDone. Files: {total} | "
-        f"Functions: {totals['functions']} | "
-        f"Classes: {totals['classes']} | "
-        f"Edges: {totals['edges']}"
+        f"\nDone. Files processed: {total} | "
+        f"Functions processed: {totals['functions']} | "
+        f"Classes processed: {totals['classes']} | "
+        f"Edges processed: {totals['edges']} "
+        f"(DB deduplicates by name+file — stored count will be lower)"
     )
 
 
