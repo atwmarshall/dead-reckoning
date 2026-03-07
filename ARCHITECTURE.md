@@ -1,84 +1,119 @@
 # Architecture
 
-This document covers: schema design, repo layout rationale, integration points, and what "working" looks like at each boundary.
+This document covers: system overview, SurrealDB schema and usage, LangGraph agent design, integration points, and design decisions.
 
 ---
 
-## System overview
+## System Overview
 
-```
-GitHub repo (local clone)
-        │
-        ▼
-┌─────────────────┐
-│  ingestion/     │  parser.py walks .py files via ast module
-│  parser.py      │  extracts: files, functions, classes, imports
-└────────┬────────┘
-         │ entities dict
-         ▼
-┌─────────────────┐
-│  ingestion/     │  loader.py upserts nodes + RELATE edges
-│  loader.py      │  deterministic IDs → idempotent runs
-└────────┬────────┘
-         │ SurrealDB writes
-         ▼
-┌─────────────────────────────────────────┐
-│              SurrealDB Cloud            │
-│  Tables: file, function, class          │
-│  Edges:  imports, contains, calls       │
-│  Also:   checkpoints, checkpoint_writes │
-└────────┬──────────────┬─────────────────┘
-         │ graph queries │ checkpoint read/write
-         ▼               ▼
-┌──────────────┐  ┌──────────────────────┐
-│  agent/      │  │  langgraph-           │
-│  tools.py    │  │  checkpoint-surrealdb │
-└──────┬───────┘  └──────────┬───────────┘
-       │ tool results         │ state persistence
-       ▼                      ▼
-┌─────────────────────────────────────────┐
-│            LangGraph StateGraph          │
-│  llm_node → tools_node → llm_node ...  │
-│  Checkpoints at every node transition   │
-└────────────────┬────────────────────────┘
-                 │ agent responses
-                 ▼
-┌─────────────────┐
-│   ui/app.py     │  Streamlit: graph viz + chat
-│   Streamlit     │  streamlit-agraph for visualisation
-└─────────────────┘
+```mermaid
+flowchart TD
+    User([User / Streamlit UI]) -->|natural language query| QA[Query Agent\nlangraph StateGraph]
+    User -->|repo path| IA[Ingestion Agent\nlangraph StateGraph]
+
+    IA -->|parse .py files| Parser[ingestion/parser.py\nPython ast module]
+    Parser -->|entities dict| Loader[ingestion/loader.py\nupsert + RELATE]
+    Loader -->|nodes + edges| SDB[(SurrealDB Cloud\nhackathon::deadreckoning)]
+
+    QA -->|hybrid_search tool| Tools[agent/tools.py\nDeadReckoningRetriever]
+    Tools -->|SurrealQL graph + vector queries| SDB
+    Tools -->|ranked results| QA
+
+    QA -->|checkpoint read/write| SDB
+    IA -->|checkpoint read/write| SDB
+
+    QA -->|LangSmith traces| LS[LangSmith\nObservability]
+    Tools -->|@traceable spans| LS
+
+    SDB -->|graph data for visualisation| UI[ui/app.py\nStreamlit + streamlit-agraph]
+    QA -->|chat responses| UI
 ```
 
 ---
 
-## SurrealDB schema
+## SurrealDB: Detailed Architecture
 
-### Namespace + database
+SurrealDB serves two distinct roles in this system: **knowledge graph store** and **agent checkpoint store**. Both live in the same database instance (`hackathon::deadreckoning`), demonstrating SurrealDB's hybrid relational/graph/document capabilities.
+
+```mermaid
+erDiagram
+    file {
+        string id PK "file:md5hash"
+        string path "relative path e.g. auth/login.py"
+        string language "python"
+        int line_count
+        array embedding "optional, future use"
+    }
+    function {
+        string id PK "function:md5hash"
+        string name
+        record file FK
+        int lineno
+        string docstring "optional"
+        array embedding "768-dim nomic-embed-text vector"
+        bool is_method
+        string class_name "optional"
+        bool has_docstring
+    }
+    class {
+        string id PK "class:md5hash"
+        string name
+        record file FK
+        int lineno
+        array bases "base class name strings"
+    }
+    checkpoint {
+        string id PK
+        string thread_id
+        string checkpoint_ns
+        string checkpoint_id
+        object metadata
+        object checkpoint
+    }
+    write {
+        string id PK
+        string thread_id
+        string task_id
+        object writes
+    }
+
+    file ||--o{ function : "contains (edge)"
+    file ||--o{ class : "contains (edge)"
+    file ||--o{ file : "imports (edge)"
+    function ||--o{ function : "calls (edge)"
+    class ||--o{ class : "inherits (edge)"
+    checkpoint ||--o{ write : "has writes"
+```
+
+### SurrealDB Namespace + Database
+
 ```
 namespace: hackathon
 database:  deadreckoning
 ```
 
-### Entity tables (nodes)
+### Node Tables
 
 ```sql
--- FILE: represents a .py source file
+-- FILE: a .py source file
 DEFINE TABLE file SCHEMAFULL;
-  DEFINE FIELD path      ON file TYPE string;   -- relative path: "auth/login.py"
-  DEFINE FIELD language  ON file TYPE string DEFAULT 'python';
+  DEFINE FIELD path       ON file TYPE string;
+  DEFINE FIELD language   ON file TYPE string DEFAULT 'python';
   DEFINE FIELD line_count ON file TYPE int;
-  DEFINE FIELD embedding ON file TYPE option<array>;  -- future use
+  DEFINE FIELD embedding  ON file TYPE option<array>;
 
 DEFINE INDEX file_path_idx ON file FIELDS path UNIQUE;
 
 -- FUNCTION: a named function or method
 DEFINE TABLE function SCHEMAFULL;
-  DEFINE FIELD name       ON function TYPE string;
-  DEFINE FIELD file       ON function TYPE record<file>;
-  DEFINE FIELD lineno     ON function TYPE int;
-  DEFINE FIELD docstring  ON function TYPE option<string>;
-  DEFINE FIELD embedding  ON function TYPE option<array>;  -- from docstring
-  DEFINE FIELD is_method  ON function TYPE bool DEFAULT false;
+  DEFINE FIELD name          ON function TYPE string;
+  DEFINE FIELD file          ON function TYPE record<file>;
+  DEFINE FIELD lineno        ON function TYPE int;
+  DEFINE FIELD docstring     ON function TYPE option<string>;
+  DEFINE FIELD embedding     ON function TYPE option<array>;  -- 768-dim vector
+  DEFINE FIELD is_method     ON function TYPE bool DEFAULT false;
+  DEFINE FIELD class_name    ON function TYPE option<string>;
+  DEFINE FIELD has_docstring ON function TYPE bool DEFAULT false;
 
 DEFINE INDEX fn_name_file_idx ON function FIELDS name, file UNIQUE;
 
@@ -87,334 +122,292 @@ DEFINE TABLE class SCHEMAFULL;
   DEFINE FIELD name   ON class TYPE string;
   DEFINE FIELD file   ON class TYPE record<file>;
   DEFINE FIELD lineno ON class TYPE int;
-  DEFINE FIELD bases  ON class TYPE array DEFAULT [];  -- base class names (strings)
+  DEFINE FIELD bases  ON class TYPE array DEFAULT [];
 
 DEFINE INDEX class_name_file_idx ON class FIELDS name, file UNIQUE;
 ```
 
-### Edge tables (relationships)
+### Edge Tables (Graph Relationships)
 
 ```sql
--- SCHEMALESS edges: flexible, no required fields beyond the relation itself
-DEFINE TABLE imports SCHEMALESS;   -- file -> file (or external dep string)
-DEFINE TABLE contains SCHEMALESS;  -- file -> function | class
-DEFINE TABLE calls SCHEMALESS;     -- function -> function (stretch goal)
-DEFINE TABLE inherits SCHEMALESS;  -- class -> class (stretch goal)
+DEFINE TABLE imports   SCHEMALESS;  -- file -> file
+DEFINE TABLE contains  SCHEMALESS;  -- file -> function | class
+DEFINE TABLE calls     SCHEMALESS;  -- function -> function
+DEFINE TABLE inherits  SCHEMALESS;  -- class -> class
 ```
 
-### Deterministic record IDs
+### Checkpoint Tables (Agent State Persistence)
 
-Use a stable hash so re-ingestion updates rather than duplicates:
+```sql
+DEFINE TABLE IF NOT EXISTS checkpoint SCHEMALESS;  -- full agent state snapshots
+DEFINE TABLE IF NOT EXISTS `write`    SCHEMALESS;  -- per-task write deltas
+```
+
+### Deterministic Record IDs (Idempotent Ingestion)
 
 ```python
-import hashlib
-
-def file_id(path: str) -> str:
-    h = hashlib.md5(path.encode()).hexdigest()[:12]
-    return f"file:`{h}`"
-
-def function_id(file_path: str, fn_name: str) -> str:
-    key = f"{file_path}::{fn_name}"
-    h = hashlib.md5(key.encode()).hexdigest()[:12]
-    return f"function:`{h}`"
-
-def class_id(file_path: str, class_name: str) -> str:
-    key = f"{file_path}::{class_name}"
-    h = hashlib.md5(key.encode()).hexdigest()[:12]
-    return f"class:`{h}`"
+# Hash-based IDs mean re-ingestion updates records rather than duplicating
+file_id     = f"file:`{md5(path)[:12]}`"
+function_id = f"function:`{md5(path + '::' + name)[:12]}`"
+class_id    = f"class:`{md5(path + '::' + name)[:12]}`"
 ```
 
-### Key SurrealQL patterns
+### Key SurrealQL Query Patterns
 
 ```sql
--- Create or update (upsert) — idempotent
+-- Upsert (idempotent ingestion)
 INSERT INTO file { id: file:`abc123`, path: "auth.py", language: "python", line_count: 120 }
   ON DUPLICATE KEY UPDATE line_count = line_count;
 
--- Create edge
+-- Create a graph edge
 RELATE file:`abc123` -> imports -> file:`def456`;
 
--- Graph traversal: what does auth.py import?
+-- Forward graph traversal: what does auth.py import?
 SELECT ->imports->file.path AS imports FROM file:`abc123`;
 
 -- Reverse traversal: what imports utils.py?
 SELECT <-imports<-file.path AS imported_by FROM file:`def456`;
 
--- 2-hop: transitive imports
-SELECT ->imports->file->imports->file.path AS transitive FROM file:`abc123`;
+-- Find parent class by proximity (lineno ordering)
+SELECT name, bases, lineno FROM `class`
+WHERE file.path = $path AND lineno < $lineno
+ORDER BY lineno DESC LIMIT 1;
 
--- Hybrid: vector search then graph expand
-SELECT *, vector::similarity::cosine(embedding, $query_vec) AS score
-FROM function
-WHERE vector::similarity::cosine(embedding, $query_vec) > 0.75
-ORDER BY score DESC LIMIT 5
-FETCH file;
+-- Sibling methods in same class
+SELECT name FROM `function`
+WHERE file.path = $path AND class_name = $class_name AND name != $name
+LIMIT 20;
+
+-- Vector similarity search (semantic retrieval)
+SELECT id, name, lineno, class_name, docstring, file.path AS path,
+       vector::similarity::cosine(embedding, $vec) AS score
+FROM `function`
+WHERE embedding IS NOT NONE
+  AND vector::similarity::cosine(embedding, $vec) >= $threshold
+ORDER BY score DESC LIMIT 10;
+
+-- Keyword match (graph name search)
+SELECT id, name, lineno, class_name, docstring, file.path AS path
+FROM `function`
+WHERE string::lowercase(name) CONTAINS $term
+LIMIT 25;
+```
+
+### How Context Evolves During Execution
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant IA as Ingestion Agent
+    participant P as parser.py
+    participant L as loader.py
+    participant SDB as SurrealDB
+
+    U->>IA: invoke(repo_path="httpx/", thread_id="ingest-httpx")
+    IA->>SDB: read checkpoint (resume if interrupted)
+    SDB-->>IA: IngestionState{all_files, processed_files}
+    loop for each unprocessed .py file
+        IA->>P: parse_file(path)
+        P-->>IA: {functions, classes, imports, ...}
+        IA->>L: load_file(parsed)
+        L->>SDB: UPSERT file, function, class nodes
+        L->>SDB: RELATE imports/contains edges
+        IA->>SDB: write checkpoint (processed_files grows)
+    end
+    Note over SDB: Knowledge graph now contains<br/>nodes + edges for entire repo.<br/>Context has evolved — every query<br/>now has richer graph to traverse.
 ```
 
 ---
 
-## Agent design
+## LangGraph / LangChain: Detailed Architecture
 
-### State
+### Query Agent Graph
+
+```mermaid
+stateDiagram-v2
+    [*] --> llm_node: user message
+    llm_node --> tools_node: tool_calls present
+    llm_node --> [*]: no tool calls (final answer)
+    tools_node --> llm_node: tool results appended to messages
+
+    state llm_node {
+        [*] --> bind_tools
+        bind_tools --> invoke_ollama
+        invoke_ollama --> [*]
+        note right of bind_tools: hybrid_search bound via\nbind_tools([hybrid_search])
+    }
+
+    state tools_node {
+        [*] --> ToolNode
+        ToolNode --> hybrid_search
+        hybrid_search --> DeadReckoningRetriever
+        DeadReckoningRetriever --> [*]
+    }
+```
+
+### Ingestion Agent Graph
+
+```mermaid
+stateDiagram-v2
+    [*] --> initialize
+    initialize --> process_file: files remaining
+    initialize --> [*]: no files (already complete)
+    process_file --> process_file: more files remaining
+    process_file --> [*]: all files processed
+
+    state initialize {
+        [*] --> check_all_files
+        check_all_files --> parse_repo: all_files is empty (first run)
+        check_all_files --> [*]: all_files populated (resume)
+        parse_repo --> populate_state
+        populate_state --> [*]
+    }
+
+    state process_file {
+        [*] --> pick_next_unprocessed
+        pick_next_unprocessed --> parse_file
+        parse_file --> load_to_surrealdb
+        load_to_surrealdb --> append_to_processed
+        append_to_processed --> write_checkpoint
+        write_checkpoint --> [*]
+        note right of write_checkpoint: Checkpoint saved after every file.\nKill and resume from exact position.
+    }
+```
+
+### Agent State Schemas
 
 ```python
-# agent/state.py
-from typing import TypedDict, Annotated
-from langgraph.graph.message import add_messages
-
+# Query agent — conversational state
 class AgentState(TypedDict):
-    messages: Annotated[list, add_messages]  # conversation history
-    repo_path: str                            # which repo we're querying
+    messages: Annotated[list, add_messages]  # full conversation history
+    repo_path: str                            # which repo is loaded
+
+# Ingestion agent — progress tracking state
+class IngestionState(TypedDict):
+    messages: Annotated[list, add_messages]
+    repo_path: str
+    all_files:       list[str]  # all .py files discovered on first run
+    processed_files: list[str]  # grows with each checkpoint
+    current_file:    str        # last file processed
 ```
 
-### Tools (agent/tools.py)
+### hybrid_search: Retrieval Pipeline
 
-| Tool | Input | SurrealQL used | Returns |
-|---|---|---|---|
-| `get_dependencies(module)` | filename (partial ok) | `->imports->file` traversal | list of file paths |
-| `find_callers(function)` | function name | `<-calls<-function` reverse | list of function names |
-| `semantic_search(query)` | natural language string | vector NEAR on embeddings | list of functions + snippets |
-| `explain_module(module)` | filename | get all functions + docstrings | summary string |
+The sole tool exposed to the query agent. Combines semantic vector search and keyword graph search via Reciprocal Rank Fusion (RRF), then enriches results with graph context.
 
-### Graph structure (agent/graph.py)
+```mermaid
+flowchart TD
+    Q[User query string] --> EX[_extract_terms\nCamelCase split + stopword filter]
+    Q --> EMB[OllamaEmbeddings\nnomic-embed-text 768-dim]
+
+    EX -->|keyword terms| KW[_keyword\nSurrealQL: name CONTAINS term]
+    EMB -->|embedding vector| SEM[_semantic\nSurrealQL: vector::similarity::cosine >= threshold]
+
+    KW -->|ranked list| RRF[_rrf_merge\nReciprocal Rank Fusion\nscore = Σ 1/(k + rank)\nexact-name bonus: +1/k]
+    SEM -->|ranked list| RRF
+
+    RRF -->|top N docs| ENR[_enrich x N in parallel\nasyncio.gather]
+
+    ENR -->|doc + path + lineno| PC["SurrealQL: parent class\n(lineno proximity ordering)"]
+    ENR -->|doc + class_name| SB["SurrealQL: sibling methods\n(same file + class_name)"]
+
+    PC --> FMT[_format]
+    SB --> FMT
+    FMT -->|structured text blocks| LLM[LLM context window]
+```
+
+### LangSmith Observability
+
+Every retrieval sub-step is decorated with `@traceable`, producing a nested trace tree in LangSmith:
+
+```
+LangGraph run
+└── llm_node
+└── tools_node
+    └── hybrid_search
+        ├── semantic_search     [retriever] vec_dims=768, threshold=0.55
+        ├── keyword_search      [retriever] terms=[...]
+        ├── rrf_merge           [chain]     list_counts=[N, M]
+        └── graph_enrich x N   [retriever] function, parent_class, siblings
+```
+
+### Checkpointing: How Resumable Flows Work
+
+```mermaid
+sequenceDiagram
+    participant App as ui/app.py
+    participant AG as Query Agent
+    participant SDB as SurrealDB
+
+    App->>AG: invoke(messages, config{thread_id="query-httpx"})
+    AG->>SDB: get_tuple(thread_id) — load prior checkpoint
+    SDB-->>AG: AgentState{messages: [prior conversation]}
+    AG->>AG: llm_node (context includes all prior turns)
+    AG->>AG: tools_node → hybrid_search
+    AG->>SDB: put(checkpoint) — save state after every node
+    AG-->>App: response
+
+    Note over AG,SDB: Next invocation resumes from last checkpoint.<br/>Conversation history preserved across sessions<br/>without client-side storage.
+```
+
+### Thread ID Namespacing
 
 ```python
-# LangGraph node flow:
-# 
-#  [START]
-#     │
-#     ▼
-#  llm_node          ← calls Ollama (gemma3) with tools bound
-#     │
-#     ├─ tool_calls? → tools_node → back to llm_node
-#     │
-#     └─ no tool calls → [END]
-#
-# Compiled with checkpointer:
-# agent = graph.compile(checkpointer=SurrealDBSaver(...))
-```
-
-### Ollama wiring
-
-```python
-import os
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-
-# LLM — swap model via env var: gemma3:4b (dev) or gemma3:27b (demo)
-llm = ChatOllama(
-    model=os.getenv("OLLAMA_MODEL", "gemma3:4b"),
-    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-)
-
-# Embeddings — nomic-embed-text, 768 dimensions
-embeddings = OllamaEmbeddings(
-    model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
-    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-)
-
-# Embed a docstring
-vector = embeddings.embed_query("Authenticates a user with username and password")
-# Returns list[float] of length 768 — store directly in SurrealDB embedding field
-
-# Bind tools to LLM for the agent
-llm_with_tools = llm.bind_tools([get_dependencies, find_callers, semantic_search, explain_module])
-```
-
-**Model selection:**
-- `gemma3:4b` — use for all development and testing. Fast, low RAM, good enough for tool use.
-- `gemma3:27b` — switch to this for the live demo. Better reasoning, more coherent answers.
-- Change via `OLLAMA_MODEL` env var only — no code changes needed.
-
-**Note:** Ollama must be running (`ollama serve`) before the agent starts. Models must be pulled:
-```bash
-ollama pull gemma3:4b
-ollama pull gemma3:27b
-ollama pull nomic-embed-text
-```
-
----
-
-### Checkpointer wiring
-
-```python
-from langgraph_checkpoint_surrealdb import SurrealDBSaver
-import os
-
-checkpointer = SurrealDBSaver(
-    url=os.getenv("SURREALDB_URL"),
-    username=os.getenv("SURREALDB_USER"),
-    password=os.getenv("SURREALDB_PASS"),
-    namespace=os.getenv("SURREALDB_NS"),
-    database=os.getenv("SURREALDB_DB"),
-)
-
-# NOTE: check langgraph-checkpoint-surrealdb README for exact init signature
-# It may differ — read the source before coding against it
-
-# Thread ID ties a session to a repo
-config = {"configurable": {"thread_id": f"query-{repo_name}"}}
-
-# Invoke (first call or resume — same pattern)
-result = agent.invoke({"messages": [("user", query)]}, config)
-```
-
-### Ingestion agent thread IDs
-
-```python
-# Ingestion uses a separate thread namespace from query sessions
+# Ingestion and query use separate thread namespaces
+# to prevent state deserialization conflicts
 ingest_config = {"configurable": {"thread_id": f"ingest-{repo_name}"}}
+query_config  = {"configurable": {"thread_id": f"query-{repo_name}"}}
 
-# This means: query and ingest share the same SurrealDB
-# but have separate checkpoint histories
+# Both share the same SurrealDB database
+# but have completely separate checkpoint histories
 ```
 
----
+### LLM Wiring
 
-## Integration points
-
-These are the five boundaries where things break. Test each one explicitly before moving on.
-
----
-
-### INT-1: parser.py → loader.py
-
-**What crosses the boundary:** A Python dict per file:
 ```python
-{
-  "path": "auth/login.py",
-  "line_count": 120,
-  "functions": [{"name": "login", "lineno": 14, "docstring": "Authenticates user"}],
-  "classes": [{"name": "AuthService", "lineno": 5, "bases": ["BaseService"]}],
-  "imports": ["os", "utils.helpers", "fastapi.Request"]
-}
-```
+# Model selected at runtime via env var — no code changes to switch
+llm = ChatOllama(
+    model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),  # swap for gemma3:27b at demo
+    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+)
+llm_with_tools = llm.bind_tools([hybrid_search])
 
-**Test:**
-```bash
-python -c "
-from ingestion.parser import parse_file
-result = parse_file('tests/fixtures/sample.py')
-print(result)
-assert 'functions' in result
-assert 'imports' in result
-print('INT-1 PASS')
-"
+# Embeddings — 768-dim vectors stored in SurrealDB function.embedding
+embedder = OllamaEmbeddings(model="nomic-embed-text")
 ```
-
-**Success:** Dict printed with at least 1 function and 1 import for any non-trivial .py file.
 
 ---
 
-### INT-2: loader.py → SurrealDB
+## Integration Points
 
-**What crosses the boundary:** SurrealDB records and edges created from the parser output.
+The five boundaries where things break. Each must be verified independently before wiring together.
 
-**Test:**
-```bash
-python -c "
-from ingestion.loader import load_file
-from ingestion.parser import parse_file
-
-parsed = parse_file('tests/fixtures/sample.py')
-load_file(parsed)
-print('INT-2 write PASS')
-"
-
-# Then in SurrealDB cloud console or CLI:
-# SELECT * FROM file LIMIT 5;          -- should show records
-# SELECT * FROM function LIMIT 5;      -- should show records
-# SELECT ->contains->function FROM file LIMIT 1;  -- should show edges
-```
-
-**Success:** `SELECT count() FROM function GROUP ALL` returns > 0.
+| ID | Boundary | Test command | Success signal |
+|---|---|---|---|
+| INT-1 | parser.py → loader.py | `parse_file('sample.py')` | dict with `functions`, `imports` keys |
+| INT-2 | loader.py → SurrealDB | `load_file(parsed)` then `SELECT count() FROM function GROUP ALL` | count > 0 |
+| INT-3 | tools.py → SurrealDB | `hybrid_search.invoke({'query': 'authenticate user'})` | non-empty list |
+| INT-4 | graph.py + checkpointer | kill ingestion mid-run, resume same thread_id | resumes from file N+1, not file 1 |
+| INT-5 | agent → Streamlit UI | chat "what does _client.py import?", check LangSmith | real file names in response, trace visible |
 
 ---
 
-### INT-3: tools.py → SurrealDB (standalone)
-
-**What crosses the boundary:** Tool functions called directly (not via agent) return real data.
-
-**Test:**
-```bash
-python -c "
-from agent.tools import get_dependencies, find_callers
-# Use a filename you know exists in your seeded DB
-deps = get_dependencies.invoke({'module': 'login'})
-print('deps:', deps)
-assert isinstance(deps, list)
-assert len(deps) > 0
-print('INT-3 PASS')
-"
-```
-
-**Success:** Each tool returns a non-empty list when called against a seeded database. Test ALL tools individually before wiring into the agent.
-
----
-
-### INT-4: graph.py + checkpointer → interrupt/resume
-
-**What crosses the boundary:** Agent state surviving a process kill and reloading correctly.
-
-**Test:**
-```bash
-# Terminal 1: run ingestion agent, kill after 3 files
-python -c "
-from agent.graph import build_ingestion_agent
-import os
-
-agent = build_ingestion_agent()
-config = {'configurable': {'thread_id': 'test-ingest-001'}}
-# This will run — hit CTRL+C after you see '3 files processed'
-agent.invoke({'repo_path': '/path/to/small/repo'}, config)
-" 
-# CTRL+C
-
-# Terminal 1: resume — same thread_id
-python -c "
-from agent.graph import build_ingestion_agent
-
-agent = build_ingestion_agent()
-config = {'configurable': {'thread_id': 'test-ingest-001'}}
-result = agent.invoke(None, config)  # None = resume
-print(result)
-"
-```
-
-**Success:** Second invocation prints something like "resuming from checkpoint, 3 files already processed" and continues from file 4, not file 1. Verify by checking `nodes_indexed` in the resumed state matches the interrupted state.
-
----
-
-### INT-5: agent → Streamlit UI
-
-**What crosses the boundary:** Agent invoked from Streamlit, response streamed to chat.
-
-**Test:**
-```bash
-streamlit run ui/app.py
-# In the UI:
-# 1. Enter a module name in the chat: "what does login.py import?"
-# 2. Verify: response appears within 10 seconds
-# 3. Verify: graph panel shows nodes (not empty)
-# 4. Open smith.langchain.com — verify trace appeared
-```
-
-**Success:** Chat response contains actual file/function names from the seeded repo (not hallucinated). LangSmith trace shows tool calls.
-
----
-
-## Design decisions
+## Design Decisions
 
 **Why SurrealDB for both knowledge graph AND checkpoints?**
-SurrealDB can handle both graph-style data (RELATE, traversal queries) and row-style data (checkpoint tables) in the same instance. This avoids a second database and lets us demo SurrealDB doing two distinct things — which scores highly with the SurrealDB judges.
+SurrealDB handles graph-style data (RELATE, traversal) and row-style data (checkpoint tables) in the same instance. This avoids a second database and demonstrates SurrealDB doing two qualitatively different things — knowledge graph queries and transactional agent state — which directly addresses both SurrealDB judging criteria (structured memory + persistent agent state).
+
+**Why hybrid search (RRF) instead of pure vector search?**
+Codebases have exact names (function names, class names) that benefit from keyword matching, and semantic concepts (what does authentication do?) that benefit from vector similarity. RRF merges both ranked lists without needing to tune a weighting parameter. The exact-name bonus ensures that searching "DigestAuth" finds `DigestAuth` even if semantic similarity is low.
+
+**Why graph enrichment after retrieval?**
+The LLM needs context beyond just a docstring — which class a function belongs to and what sibling methods exist gives the model enough structure to reason about code architecture. This context comes from SurrealDB graph queries (lineno-ordered class proximity, shared class_name siblings), not embeddings.
 
 **Why Python `ast` module over tree-sitter?**
-`ast` is built-in (zero install friction), handles all valid Python 3 syntax, and is simpler to walk. tree-sitter adds multi-language support but at the cost of a C dependency and more complex setup. Scope to Python only for the hackathon.
+Built-in, zero install friction, handles all valid Python 3 syntax. tree-sitter adds multi-language support at the cost of a C dependency and more complex setup. Python-only scope for the hackathon.
 
 **Why Streamlit over FastAPI + React?**
-Solo build. Streamlit with `streamlit-agraph` delivers graph visualisation + chat in ~200 lines. React would take 4–6 hours. The demo needs to look credible, not beautiful.
-
-**Why `httpx` as the demo repo?**
-~30 Python files, clean code, interesting graph structure (AsyncClient, connection pooling, auth middleware show up as meaningful relationships), fast to index (~20 seconds), well-known to a technical audience.
+Solo build. Streamlit with `streamlit-agraph` delivers graph visualisation and chat in ~200 lines. The demo needs to look credible, not beautiful.
 
 **Why separate thread IDs for ingestion vs query agents?**
-Ingestion and query are separate LangGraph graphs with different state shapes. Mixing their checkpoints in the same thread would cause state deserialization errors. Namespacing thread IDs (`ingest-*` vs `query-*`) keeps them cleanly separated in the same SurrealDB database.
+Ingestion and query are separate LangGraph graphs with different state schemas (`IngestionState` vs `AgentState`). Mixing their checkpoints in the same thread causes state deserialization errors. Namespacing thread IDs (`ingest-*` vs `query-*`) keeps them cleanly separated in the same SurrealDB database.

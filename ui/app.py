@@ -1,9 +1,13 @@
 import asyncio
+import json
+import re
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+from langchain_core.messages import ToolMessage
 from streamlit_agraph import Config, Edge, Node, agraph
 
 from agent.graph import build_query_agent
@@ -17,6 +21,34 @@ FILE_COLOR = "#4C8BF5"   # blue
 FUNC_COLOR = "#9B59B6"   # purple
 CLASS_COLOR = "#27AE60"  # green
 CALLS_EDGE_COLOR = "#E67E22"  # dark orange
+
+# Matches file paths like /abs/path/file.py:42 or rel/path/file.py:42
+# Requires at least one slash so dotted names (agent.graph) are excluded.
+_PATH_RE = re.compile(
+    r"`((?:/[\w./-]+\.\w{1,6})(?::\d+)?)`"                        # `backtick-wrapped`
+    r"|(?<![\[(`/\w:])((?:/[\w./-]+\.\w{1,6})(?::\d+)?)"          # /absolute/path.ext
+    r"|(?<![\[(`/\w.])((?:[\w.-]+/)+[\w.-]+\.\w{1,6}(?::\d+)?)"   # relative/path.ext
+)
+
+
+def _linkify_paths(text: str, repo_path: str = "") -> str:
+    """Replace file paths in text with vscode:// clickable markdown links."""
+    def _make_link(raw: str, original: str) -> str:
+        path_part, _, line_part = raw.partition(":")
+        if path_part.startswith("/"):
+            abs_path = path_part
+        elif repo_path:
+            abs_path = f"{repo_path.rstrip('/')}/{path_part}"
+        else:
+            return original  # can't resolve relative path without repo root
+        url = f"vscode://file{abs_path}" + (f":{line_part}" if line_part else "")
+        return f"[`{raw}`]({url})"
+
+    def _replace(m: re.Match) -> str:
+        raw = m.group(1) or m.group(2) or m.group(3)
+        return _make_link(raw, m.group(0))
+
+    return _PATH_RE.sub(_replace, text)
 
 
 # ── Background ingestion thread ────────────────────────────────────────────
@@ -168,6 +200,155 @@ def _build_agraph(
     return nodes, edges
 
 
+# ── Context graph helpers ──────────────────────────────────────────────────
+
+def _parse_result_block(block: str) -> dict:
+    data = {}
+    for line in block.splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            data[key.strip()] = val.strip()
+    return data
+
+
+def _extract_context_refs(messages: list) -> list[dict]:
+    """Pull parsed node dicts from the last hybrid_search ToolMessage."""
+    for msg in reversed(messages):
+        if getattr(msg, "name", None) == "hybrid_search":
+            content = msg.content
+            if isinstance(content, str):
+                try:
+                    items = json.loads(content)
+                except Exception:
+                    items = [content]
+            else:
+                items = content
+            refs = []
+            for block in items:
+                if isinstance(block, str) and block.startswith("function:"):
+                    refs.append(_parse_result_block(block))
+            return refs
+    return []
+
+
+async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[list, list, str]:
+    names = list({r["function"] for r in refs if r.get("function")})
+    file_paths = list({r["file"] for r in refs if r.get("file")})
+    raw_class_strs = [r["class"] for r in refs if r.get("class")]
+    class_names = list({s.split("(")[0].strip() for s in raw_class_strs})
+
+    if not names or not file_paths:
+        return [], [], ""
+
+    async with get_db_client() as db:
+        fn_rows = _get_rows(await db.query(
+            "SELECT id, name, class_name, file.id AS file_id, file.path AS file_path "
+            "FROM `function` WHERE name IN $names AND file.path IN $file_paths",
+            {"names": names, "file_paths": file_paths},
+        ))
+
+        file_rows = _get_rows(await db.query(
+            "SELECT id, path FROM file WHERE path IN $file_paths",
+            {"file_paths": file_paths},
+        ))
+
+        class_rows = []
+        if class_names:
+            class_rows = _get_rows(await db.query(
+                "SELECT id, name FROM `class` WHERE name IN $class_names AND file.path IN $file_paths",
+                {"class_names": class_names, "file_paths": file_paths},
+            ))
+
+        contains_rows = _get_rows(await db.query(
+            "SELECT in, out FROM contains WHERE in.path IN $file_paths",
+            {"file_paths": file_paths},
+        )) if file_paths else []
+
+        hop_fn_rows: list[dict] = []
+        hop_class_rows: list[dict] = []
+        if one_hop and file_paths:
+            hop_fn_rows = _get_rows(await db.query(
+                "SELECT id, name, class_name FROM `function` WHERE file.path IN $file_paths",
+                {"file_paths": file_paths},
+            ))
+            hop_class_rows = _get_rows(await db.query(
+                "SELECT id, name FROM `class` WHERE file.path IN $file_paths",
+                {"file_paths": file_paths},
+            ))
+
+    nodes: list[Node] = []
+    edges: list[Edge] = []
+    seen: set[str] = set()
+
+    for row in file_rows:
+        nid = str(row.get("id", ""))
+        label = Path(str(row.get("path", ""))).name
+        if nid and nid not in seen:
+            nodes.append(Node(id=nid, label=label, color=FILE_COLOR, size=20))
+            seen.add(nid)
+
+    # Retrieved nodes: same size as knowledge graph, gold font to highlight
+    for row in fn_rows:
+        nid = str(row.get("id", ""))
+        label = str(row.get("name", ""))
+        if nid and nid not in seen:
+            nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12,
+                              font={"color": "#FFD700"}))
+            seen.add(nid)
+
+    for row in class_rows:
+        nid = str(row.get("id", ""))
+        label = str(row.get("name", ""))
+        if nid and nid not in seen:
+            nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15,
+                              font={"color": "#FFD700"}))
+            seen.add(nid)
+
+    if one_hop:
+        for row in hop_fn_rows:
+            nid = str(row.get("id", ""))
+            label = str(row.get("name", ""))
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
+                seen.add(nid)
+
+        for row in hop_class_rows:
+            nid = str(row.get("id", ""))
+            label = str(row.get("name", ""))
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
+                seen.add(nid)
+
+    for row in contains_rows:
+        src = str(row.get("in", ""))
+        dst = str(row.get("out", ""))
+        if src and dst and src in seen and dst in seen:
+            edges.append(Edge(source=src, target=dst))
+
+    names_list = ", ".join(f"'{n}'" for n in names)
+    paths_list = ", ".join(f"'{p}'" for p in file_paths)
+    query_str = (
+        f"SELECT id, name, class_name\n"
+        f"FROM `function`\n"
+        f"WHERE name IN [{names_list}]\n"
+        f"  AND file.path IN [{paths_list}];"
+    )
+    if one_hop:
+        query_str += (
+            "\n\n-- one-hop: all nodes in same files\n"
+            f"SELECT id, name FROM `function`\n"
+            f"WHERE file.path IN [{paths_list}];\n"
+            f"SELECT id, name FROM `class`\n"
+            f"WHERE file.path IN [{paths_list}];"
+        )
+
+    return nodes, edges, query_str
+
+
+def _build_context_graph(refs: list[dict], one_hop: bool) -> tuple[list, list, str]:
+    return asyncio.run(_build_context_graph_async(refs, one_hop))
+
+
 # ── Session-state initialisation ───────────────────────────────────────────
 
 def _init_state() -> None:
@@ -187,6 +368,13 @@ def _init_state() -> None:
         "gf_structural": True,
         "gf_calls": True,
         "graph_frozen": False,
+        "context_refs": [],
+        "show_one_hop": False,
+        "ctx_graph_nodes": [],
+        "ctx_graph_edges": [],
+        "ctx_query": "",
+        "graph_interval": 60,
+        "graph_last_refreshed": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -308,6 +496,21 @@ with st.sidebar:
 tab_graph, tab_chat = st.tabs(["Knowledge Graph", "Ask the Codebase"])
 
 
+# ── Graph refresh helper ───────────────────────────────────────────────────
+
+def _do_graph_refresh():
+    try:
+        data = _fetch_graph_data()
+        nodes, edges = _build_agraph(*data)
+        st.session_state["graph_nodes"] = nodes
+        st.session_state["graph_edges"] = edges
+        st.session_state["graph_last_refreshed"] = datetime.now().strftime("%H:%M:%S")
+        st.session_state.pop("graph_error", None)
+    except Exception as exc:
+        st.session_state["graph_error"] = str(exc)
+        st.session_state.pop("graph_nodes", None)
+
+
 # ── Tab 1: Knowledge Graph ─────────────────────────────────────────────────
 with tab_graph:
     ctrl_col, freeze_col = st.columns([3, 2])
@@ -353,39 +556,132 @@ with tab_graph:
             st.info("No nodes match the current filters.")
     else:
         st.info("Click **Refresh graph** to load the knowledge graph.")
+    st.number_input(
+        "Auto-refresh every (seconds)",
+        min_value=10, max_value=600, step=10,
+        key="graph_interval",
+    )
+
+    @st.fragment(run_every=st.session_state.graph_interval)
+    def _graph_fragment():
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.button("Refresh now", type="primary")
+        with col2:
+            if st.session_state.get("graph_last_refreshed"):
+                st.caption(f"Last refreshed: {st.session_state['graph_last_refreshed']}")
+
+        _do_graph_refresh()
+
+        if "graph_error" in st.session_state:
+            st.error(f"Could not load graph: {st.session_state['graph_error']}")
+        elif "graph_nodes" in st.session_state:
+            g_nodes = st.session_state["graph_nodes"]
+            g_edges = st.session_state["graph_edges"]
+            if g_nodes:
+                st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
+                cfg = Config(width="100%", height=620, directed=True, physics=True, hierarchical=False)
+                agraph(nodes=g_nodes, edges=g_edges, config=cfg)
+            else:
+                st.info("No nodes yet. Run ingestion first.")
+
+    _graph_fragment()
 
 
 # ── Tab 2: Ask the Codebase ────────────────────────────────────────────────
 with tab_chat:
-    # Render existing message history
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+    chat_col, graph_col = st.columns([3, 2])
 
-    if prompt := st.chat_input("Ask anything about the codebase…"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.write(prompt)
+    with chat_col:
+        repo = st.session_state.get("repo_path_input", "")
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(_linkify_paths(msg["content"], repo))
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking…"):
+        if prompt := st.chat_input("Ask anything about the codebase…"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
                 try:
                     if "query_agent" not in st.session_state:
                         st.session_state.query_agent = build_query_agent()
-
                     agent = st.session_state.query_agent
-                    chat_thread_id = f"query-{st.session_state.session_id}"
-                    result = agent.invoke(
-                        {
-                            "messages": [("user", prompt)],
-                            "repo_path": st.session_state.repo_path_input,
-                        },
-                        {"configurable": {"thread_id": chat_thread_id}},
+                    config = {"configurable": {"thread_id": f"query-{st.session_state.session_id}"}}
+                    inputs = {
+                        "messages": [("user", prompt)],
+                        "repo_path": st.session_state.repo_path_input,
+                    }
+
+                    status = st.status("Thinking…", expanded=True)
+                    response_area = st.empty()
+                    response = ""
+
+                    for chunk, _meta in agent.stream(inputs, config, stream_mode="messages"):
+                        if getattr(chunk, "tool_call_chunks", []):
+                            for tc in chunk.tool_call_chunks:
+                                if tc.get("name"):
+                                    with status:
+                                        st.write(f"Calling `{tc['name']}`…")
+                        elif isinstance(chunk, ToolMessage):
+                            with status:
+                                st.write(f"Got results from `{chunk.name}`")
+                        elif (
+                            isinstance(getattr(chunk, "content", None), str)
+                            and chunk.content
+                            and not getattr(chunk, "tool_call_chunks", [])
+                        ):
+                            response += chunk.content
+                            response_area.markdown(response + "▌")
+
+                    status.update(label="Done", state="complete", expanded=False)
+                    repo = st.session_state.get("repo_path_input", "")
+                    response_area.markdown(_linkify_paths(response, repo))
+
+                    state = agent.get_state(config)
+                    st.session_state.context_refs = _extract_context_refs(
+                        state.values.get("messages", [])
                     )
-                    response = result["messages"][-1].content
                 except Exception as exc:
                     response = f"Error: {exc}"
+                    st.markdown(response)
 
-            st.write(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
+    with graph_col:
+        st.subheader("Context Graph")
+        if st.session_state.context_refs:
+            one_hop = st.toggle(
+                "Show one hop",
+                value=st.session_state.show_one_hop,
+                key="one_hop_toggle",
+            )
+            st.session_state.show_one_hop = one_hop
+
+            try:
+                nodes, edges, query_str = _build_context_graph(
+                    st.session_state.context_refs, one_hop
+                )
+                st.session_state.ctx_graph_nodes = nodes
+                st.session_state.ctx_graph_edges = edges
+                st.session_state.ctx_query = query_str
+
+                if nodes:
+                    cfg = Config(
+                        width="100%",
+                        height=450,
+                        directed=True,
+                        physics=True,
+                        hierarchical=False,
+                    )
+                    agraph(nodes=nodes, edges=edges, config=cfg)
+                else:
+                    st.info("No graph nodes found for this result.")
+            except Exception as exc:
+                st.error(f"Graph error: {exc}")
+
+            with st.expander("SurrealDB query"):
+                st.code(st.session_state.ctx_query or "", language="sql")
+        else:
+            st.info("Ask a question to see the context graph.")
