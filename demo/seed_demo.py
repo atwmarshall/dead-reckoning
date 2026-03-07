@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from surrealdb import AsyncSurreal
 
-from ingestion.loader import get_db_client, load_file
+from ingestion.loader import get_db_client, load_calls, load_file
 from ingestion.parser import parse_repo
 
 load_dotenv()
@@ -82,20 +82,27 @@ async def ingest(repo_path: str) -> None:
 async def main() -> None:
     print("=== Demo seed starting ===\n")
 
-    print("Step 1/3: Resetting database ...")
+    print("Step 1/4: Resetting database ...")
     await reset_database()
 
-    print("\nStep 2/3: Ingesting demo repo ...")
+    print("\nStep 2/4: Ingesting demo repo ...")
     await ingest(DEMO_REPO)
 
-    print("\nStep 3/3: Verifying counts ...")
+    print("\nStep 3/4: Creating call edges ...")
+    parsed_files = parse_repo(DEMO_REPO)
+    async with get_db_client() as db:
+        call_edge_count = await load_calls(parsed_files, db)
+    print(f"Call edges: {call_edge_count}")
+
+    print("\nStep 4/4: Verifying counts ...")
     counts = await verify_counts()
 
     print(
         f"\nDemo ready. "
         f"Files: {counts['files']} | "
         f"Functions: {counts['functions']} | "
-        f"Classes: {counts['classes']}"
+        f"Classes: {counts['classes']} | "
+        f"Call edges: {call_edge_count}"
     )
 
 
