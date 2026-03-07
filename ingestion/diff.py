@@ -1,4 +1,5 @@
 import hashlib
+import os
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -69,22 +70,25 @@ class DiffEngine:
         ):
             # Tar-based diff: compare relative paths between two snapshots.
             # Need to reconstruct absolute paths to find prev nodes in DB.
-            prev_ing_rows = _get_rows(
-                await db.query(
-                    f"SELECT repo_path FROM {prev_ingestion_id}"
-                )
-            )
-            prev_disk = (
-                prev_ing_rows[0].get("repo_path", "") if prev_ing_rows else ""
-            ) or repo_path
 
-            # Build rel_path → abs_path map for all prev files
+            # Build rel_path → abs_path map for all prev files.
+            # Infer the disk root as the common directory of all file paths
+            # (this gives us the actual disk_path used at snapshot creation time,
+            # which may differ from the canonical repo_path stored in DB).
             prev_file_rows = _get_rows(
                 await db.query(
                     "SELECT path FROM file WHERE ingestion_id = $iid",
                     {"iid": prev_ingestion_id},
                 )
             )
+            prev_disk = repo_path
+            if prev_file_rows:
+                dirs = [str(Path(r["path"]).parent) for r in prev_file_rows]
+                try:
+                    prev_disk = os.path.commonpath(dirs)
+                except ValueError:
+                    pass
+
             prev_rel_to_abs: dict[str, str] = {}
             for row in prev_file_rows:
                 abs_path = row["path"]

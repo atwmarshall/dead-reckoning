@@ -36,10 +36,11 @@ CLASS_COLOR  = "#00BFA5"   # teal
 CALLS_EDGE_COLOR = "#FF6D00"
 
 DIFF_COLORS = {
-    "green":  "#42A5F5",   # blue (unchanged)
-    "yellow": "#FFB300",   # amber (modified)
-    "red":    "#FF6D00",   # orange-red (deleted)
+    "green":  "#43A047",   # material green-700  — unchanged
+    "yellow": "#FDD835",   # pure yellow-600     — modified
+    "red":    "#E53935",   # material red-600    — deleted
 }
+DIFF_MUTED = "#AAAAAA"   # neutral gray for non-file nodes in diff mode
 
 # ── Dark theme CSS ────────────────────────────────────────────────────────
 CUSTOM_CSS = """
@@ -51,7 +52,7 @@ section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] .stCaption,
 section[data-testid="stSidebar"] .stMarkdown { font-size: 0.85rem; }
 section[data-testid="stSidebar"] h4 { font-size: 1rem; margin-bottom: 0.25rem; }
-section[data-testid="stSidebar"] .stExpander { border: 1px solid #333; border-radius: 6px; margin-bottom: 0.5rem; }
+section[data-testid="stSidebar"] .stExpander { border: 1px solid #ddd; border-radius: 6px; margin-bottom: 0.5rem; }
 
 /* Accent colours */
 .stButton > button[kind="primary"] { background-color: #00BFA5; border-color: #00BFA5; }
@@ -306,6 +307,7 @@ def _build_agraph(
     show_classes: bool = True,
     show_structural: bool = True,
     show_calls: bool = True,
+    is_diff_mode: bool = False,
 ) -> tuple[list, list]:
     nodes: list[Node] = []
     edges: list[Edge] = []
@@ -316,7 +318,8 @@ def _build_agraph(
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=REPO_COLOR, size=35))
+                color = DIFF_MUTED if is_diff_mode else REPO_COLOR
+                nodes.append(Node(id=nid, label=label, color=color, size=35))
                 seen.add(nid)
 
     if show_folders:
@@ -324,7 +327,8 @@ def _build_agraph(
             nid = str(row.get("id", ""))
             label = str(row.get("path", "")).split("/")[-1] or str(row.get("path", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=FOLDER_COLOR, size=25))
+                color = DIFF_MUTED if is_diff_mode else FOLDER_COLOR
+                nodes.append(Node(id=nid, label=label, color=color, size=25))
                 seen.add(nid)
 
     if show_files:
@@ -332,7 +336,12 @@ def _build_agraph(
             nid = str(row.get("id", ""))
             label = Path(str(row.get("path", ""))).name
             ds = row.get("diff_status")
-            color = DIFF_COLORS[ds] if ds in DIFF_COLORS else FILE_COLOR
+            if ds and ds in DIFF_COLORS:
+                color = DIFF_COLORS[ds]
+            elif is_diff_mode:
+                color = DIFF_MUTED
+            else:
+                color = FILE_COLOR
             if nid and nid not in seen:
                 nodes.append(Node(id=nid, label=label, color=color, size=20))
                 seen.add(nid)
@@ -342,7 +351,8 @@ def _build_agraph(
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
+                color = DIFF_MUTED if is_diff_mode else FUNC_COLOR
+                nodes.append(Node(id=nid, label=label, color=color, size=12))
                 seen.add(nid)
 
     if show_classes:
@@ -350,7 +360,8 @@ def _build_agraph(
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
+                color = DIFF_MUTED if is_diff_mode else CLASS_COLOR
+                nodes.append(Node(id=nid, label=label, color=color, size=15))
                 seen.add(nid)
 
     structural_sources = [
@@ -1040,8 +1051,17 @@ with st.sidebar:
         else:
             st.caption("Click a node in the graph to see details.")
 
-    # ── Expander 3: Settings & Legend ──────────────────────────────────
-    with st.expander("Settings & Legend", expanded=False):
+    # ── Expander 3: Settings ────────────────────────────────────────────
+    with st.expander("Settings", expanded=False):
+        # Refresh button
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.button("Refresh", type="primary", use_container_width=True)
+        with col2:
+            if st.session_state.get("graph_last_refreshed"):
+                st.caption(f"Last refreshed:\n{st.session_state['graph_last_refreshed']}")
+        st.divider()
+
         # Repo / version selector
         all_ingestions = _fetch_all_ingestions()
 
@@ -1130,26 +1150,6 @@ with st.sidebar:
         st.session_state.gf_structural = st.checkbox("Structural (contains / folder / repo)", value=st.session_state.gf_structural)
         st.session_state.gf_calls      = st.checkbox("Calls",      value=st.session_state.gf_calls)
 
-        st.divider()
-
-        # Legend
-        st.caption("**Node types**")
-        st.markdown(
-            f'<span style="color:{REPO_COLOR}">&#9679;</span> Repo &nbsp; '
-            f'<span style="color:{FOLDER_COLOR}">&#9679;</span> Folder &nbsp; '
-            f'<span style="color:{FILE_COLOR}">&#9679;</span> File &nbsp; '
-            f'<span style="color:{FUNC_COLOR}">&#9679;</span> Function &nbsp; '
-            f'<span style="color:{CLASS_COLOR}">&#9679;</span> Class',
-            unsafe_allow_html=True,
-        )
-        if st.session_state.diff_highlights:
-            st.caption("**Diff**")
-            st.markdown(
-                f'<span style="color:{DIFF_COLORS["green"]}">&#9679;</span> Unchanged &nbsp; '
-                f'<span style="color:{DIFF_COLORS["yellow"]}">&#9679;</span> Modified &nbsp; '
-                f'<span style="color:{DIFF_COLORS["red"]}">&#9679;</span> Deleted',
-                unsafe_allow_html=True,
-            )
 
 
 # ── Main tabs ───────────────────────────────────────────────────────────────
@@ -1170,7 +1170,8 @@ def _do_graph_refresh():
 
     try:
         data = _fetch_graph_data(iid)
-        nodes, edges = _build_agraph(*data)
+        is_diff_mode = bool(st.session_state.diff_highlights)
+        nodes, edges = _build_agraph(*data, is_diff_mode=is_diff_mode)
         st.session_state["graph_nodes"] = nodes
         st.session_state["graph_edges"] = edges
         st.session_state["graph_last_refreshed"] = datetime.now().strftime("%H:%M:%S")
@@ -1188,15 +1189,25 @@ with tab_graph:
     is_active = is_alive or bool(st.session_state.diff_highlights)
     run_every = 1 if is_active else st.session_state.graph_interval
 
+    # Mode banner
+    is_diff = bool(st.session_state.diff_highlights)
+    if is_diff:
+        st.markdown(
+            '<div style="background:#FFEBEE;border:2px solid #E53935;border-radius:8px;'
+            'padding:0.6rem 1.2rem;font-size:1.25rem;font-weight:700;color:#B71C1C;'
+            'margin-bottom:0.75rem">&#9689; DIFF MODE — reviewing changes between versions</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="background:#E3F2FD;border:2px solid #42A5F5;border-radius:8px;'
+            'padding:0.6rem 1.2rem;font-size:1.25rem;font-weight:700;color:#1565C0;'
+            'margin-bottom:0.75rem">&#9679; NORMAL MODE</div>',
+            unsafe_allow_html=True,
+        )
+
     @st.fragment(run_every=run_every)
     def _graph_fragment():
-        btn_col, ts_col = st.columns([1, 5])
-        with btn_col:
-            st.button("Refresh now", type="primary")
-        with ts_col:
-            if st.session_state.get("graph_last_refreshed"):
-                st.caption(f"Last refreshed: {st.session_state['graph_last_refreshed']}")
-
         _do_graph_refresh()
 
         if "graph_error" in st.session_state:
@@ -1218,10 +1229,16 @@ with tab_graph:
             else:
                 st.info("No nodes yet — select a version or run ingestion.")
 
-        # When the background thread finishes, trigger a full page rerun
+        # When the background thread finishes OR transitions to awaiting_resume,
+        # trigger a full page rerun so the sidebar status updates.
         _thread: threading.Thread | None = st.session_state.get("ingest_thread")
         _alive = _thread is not None and _thread.is_alive()
-        if _alive:
+        _cur_status = st.session_state.ingest_progress.get("status", "idle")
+        _prev_status = st.session_state.get("_prev_ingest_status_frag", _cur_status)
+        if _cur_status != _prev_status:
+            st.session_state["_prev_ingest_status_frag"] = _cur_status
+            st.rerun(scope="app")
+        elif _alive:
             st.session_state["_ingestion_was_running"] = True
         elif st.session_state.pop("_ingestion_was_running", False):
             st.rerun(scope="app")
@@ -1323,3 +1340,41 @@ with tab_chat:
                 st.code(st.session_state.ctx_query or "", language="sql")
         else:
             st.info("Ask a question to see the context graph.")
+
+# ── Legend bar (bottom of page) ─────────────────────────────────────────────
+
+_is_diff_legend = bool(st.session_state.diff_highlights)
+if _is_diff_legend:
+    st.markdown(
+        '<div style="background:#FFF8E1;border:2px solid #FDD835;border-radius:8px;'
+        'padding:0.75rem 1.5rem;margin-top:0.5rem">'
+        '<span style="font-size:0.85rem;color:#666;font-weight:600;margin-right:1.5rem">DIFF</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="color:{DIFF_COLORS["green"]}">&#11044;</span> Unchanged</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="color:{DIFF_COLORS["yellow"]}">&#11044;</span> Modified</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="color:{DIFF_COLORS["red"]}">&#11044;</span> Deleted</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="color:{DIFF_MUTED}">&#11044;</span> Other nodes (muted)</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        '<div style="background:#F5F5F5;border:1px solid #E0E0E0;border-radius:8px;'
+        'padding:0.75rem 1.5rem;margin-top:0.5rem">'
+        '<span style="font-size:0.85rem;color:#666;font-weight:600;margin-right:1.5rem">NODE TYPES</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="color:{REPO_COLOR}">&#11044;</span> Repo</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="color:{FOLDER_COLOR}">&#11044;</span> Folder</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="color:{FILE_COLOR}">&#11044;</span> File</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="color:{FUNC_COLOR}">&#11044;</span> Function</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="color:{CLASS_COLOR}">&#11044;</span> Class</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
