@@ -94,69 +94,76 @@ def _get_rows(result) -> list:
     return []
 
 
-def _build_agraph(repos, folders, files, fns, classes, contains_raw, folder_edges_raw, repo_edges_raw, calls_raw) -> tuple[list, list]:
+def _build_agraph(
+    repos, folders, files, fns, classes,
+    contains_raw, folder_edges_raw, repo_edges_raw, calls_raw,
+    *,
+    show_repos: bool = True,
+    show_folders: bool = True,
+    show_files: bool = True,
+    show_functions: bool = True,
+    show_classes: bool = True,
+    show_structural: bool = True,
+    show_calls: bool = True,
+) -> tuple[list, list]:
     nodes: list[Node] = []
     edges: list[Edge] = []
     seen: set[str] = set()
 
-    for row in _get_rows(repos):
-        nid = str(row.get("id", ""))
-        label = str(row.get("name", ""))
-        if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=REPO_COLOR, size=35))
-            seen.add(nid)
+    if show_repos:
+        for row in _get_rows(repos):
+            nid = str(row.get("id", ""))
+            label = str(row.get("name", ""))
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=REPO_COLOR, size=35))
+                seen.add(nid)
 
-    for row in _get_rows(folders):
-        nid = str(row.get("id", ""))
-        label = str(row.get("path", "")).split("/")[-1] or str(row.get("path", ""))
-        if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=FOLDER_COLOR, size=25))
-            seen.add(nid)
+    if show_folders:
+        for row in _get_rows(folders):
+            nid = str(row.get("id", ""))
+            label = str(row.get("path", "")).split("/")[-1] or str(row.get("path", ""))
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=FOLDER_COLOR, size=25))
+                seen.add(nid)
 
-    for row in _get_rows(files):
-        nid = str(row.get("id", ""))
-        label = Path(str(row.get("path", ""))).name
-        if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=FILE_COLOR, size=20))
-            seen.add(nid)
+    if show_files:
+        for row in _get_rows(files):
+            nid = str(row.get("id", ""))
+            label = Path(str(row.get("path", ""))).name
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=FILE_COLOR, size=20))
+                seen.add(nid)
 
-    for row in _get_rows(fns):
-        nid = str(row.get("id", ""))
-        label = str(row.get("name", ""))
-        if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
-            seen.add(nid)
+    if show_functions:
+        for row in _get_rows(fns):
+            nid = str(row.get("id", ""))
+            label = str(row.get("name", ""))
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
+                seen.add(nid)
 
-    for row in _get_rows(classes):
-        nid = str(row.get("id", ""))
-        label = str(row.get("name", ""))
-        if nid and nid not in seen:
-            nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
-            seen.add(nid)
+    if show_classes:
+        for row in _get_rows(classes):
+            nid = str(row.get("id", ""))
+            label = str(row.get("name", ""))
+            if nid and nid not in seen:
+                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
+                seen.add(nid)
 
-    for row in _get_rows(contains_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
+    if show_structural:
+        for raw in (contains_raw, folder_edges_raw, repo_edges_raw):
+            for row in _get_rows(raw):
+                src = str(row.get("in", ""))
+                dst = str(row.get("out", ""))
+                if src and dst and src in seen and dst in seen:
+                    edges.append(Edge(source=src, target=dst))
 
-    for row in _get_rows(folder_edges_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
-
-    for row in _get_rows(repo_edges_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
-
-    for row in _get_rows(calls_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst, color=CALLS_EDGE_COLOR))
+    if show_calls:
+        for row in _get_rows(calls_raw):
+            src = str(row.get("in", ""))
+            dst = str(row.get("out", ""))
+            if src and dst and src in seen and dst in seen:
+                edges.append(Edge(source=src, target=dst, color=CALLS_EDGE_COLOR))
 
     return nodes, edges
 
@@ -171,6 +178,15 @@ def _init_state() -> None:
         "ingest_stop_event": None,
         "ingest_thread_id": None,
         "ingest_progress": {"processed": 0, "total": 0, "status": "idle"},
+        # Graph filter defaults
+        "gf_repos": True,
+        "gf_folders": True,
+        "gf_files": True,
+        "gf_functions": True,
+        "gf_classes": True,
+        "gf_structural": True,
+        "gf_calls": True,
+        "graph_frozen": False,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -273,6 +289,18 @@ with st.sidebar:
         st.caption("Ready. Enter a repo path and click **Ingest**.")
 
     st.divider()
+    with st.expander("Graph filters", expanded=False):
+        st.caption("Nodes")
+        st.session_state.gf_repos      = st.checkbox("Repos",      value=st.session_state.gf_repos)
+        st.session_state.gf_folders    = st.checkbox("Folders",    value=st.session_state.gf_folders)
+        st.session_state.gf_files      = st.checkbox("Files",      value=st.session_state.gf_files)
+        st.session_state.gf_functions  = st.checkbox("Functions",  value=st.session_state.gf_functions)
+        st.session_state.gf_classes    = st.checkbox("Classes",    value=st.session_state.gf_classes)
+        st.caption("Edges")
+        st.session_state.gf_structural = st.checkbox("Structural (contains / folder / repo)", value=st.session_state.gf_structural)
+        st.session_state.gf_calls      = st.checkbox("Calls",      value=st.session_state.gf_calls)
+
+    st.divider()
     st.caption("🔴 repo  🟠 folder  🔵 file  🟣 function  🟢 class  🟠→ calls")
 
 
@@ -282,36 +310,47 @@ tab_graph, tab_chat = st.tabs(["Knowledge Graph", "Ask the Codebase"])
 
 # ── Tab 1: Knowledge Graph ─────────────────────────────────────────────────
 with tab_graph:
-    if st.button("Refresh graph", type="primary"):
+    ctrl_col, freeze_col = st.columns([3, 2])
+    with ctrl_col:
+        refresh_clicked = st.button("Refresh graph", type="primary")
+    with freeze_col:
+        freeze = st.checkbox("Freeze layout", value=st.session_state.graph_frozen, key="graph_frozen")
+
+    if refresh_clicked:
         try:
             with st.spinner("Loading graph from SurrealDB…"):
-                repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges, calls_edges = _fetch_graph_data()
-            nodes, edges = _build_agraph(repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges, calls_edges)
-            st.session_state["graph_nodes"] = nodes
-            st.session_state["graph_edges"] = edges
+                st.session_state["graph_data_raw"] = _fetch_graph_data()
             st.session_state.pop("graph_error", None)
         except Exception as exc:
             st.session_state["graph_error"] = str(exc)
-            st.session_state.pop("graph_nodes", None)
+            st.session_state.pop("graph_data_raw", None)
         st.rerun()
 
     if "graph_error" in st.session_state:
         st.error(f"Could not load graph: {st.session_state['graph_error']}")
-    elif "graph_nodes" in st.session_state:
-        g_nodes: list = st.session_state["graph_nodes"]
-        g_edges: list = st.session_state["graph_edges"]
+    elif "graph_data_raw" in st.session_state:
+        g_nodes, g_edges = _build_agraph(
+            *st.session_state["graph_data_raw"],
+            show_repos=st.session_state.gf_repos,
+            show_folders=st.session_state.gf_folders,
+            show_files=st.session_state.gf_files,
+            show_functions=st.session_state.gf_functions,
+            show_classes=st.session_state.gf_classes,
+            show_structural=st.session_state.gf_structural,
+            show_calls=st.session_state.gf_calls,
+        )
         if g_nodes:
             st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
             cfg = Config(
                 width="100%",
                 height=620,
                 directed=True,
-                physics=True,
+                physics=not freeze,
                 hierarchical=False,
             )
             agraph(nodes=g_nodes, edges=g_edges, config=cfg)
         else:
-            st.info("No nodes in the database yet. Run ingestion first, then refresh.")
+            st.info("No nodes match the current filters.")
     else:
         st.info("Click **Refresh graph** to load the knowledge graph.")
 
