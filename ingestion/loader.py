@@ -38,6 +38,10 @@ def _folder_id(path: str) -> str:
     return hashlib.md5(path.encode()).hexdigest()[:12]
 
 
+def _repo_id(path: str) -> str:
+    return hashlib.md5(path.encode()).hexdigest()[:12]
+
+
 def _edge_id(from_id: str, rel: str, to_id: str) -> str:
     return hashlib.md5(f"{from_id}->{rel}->{to_id}".encode()).hexdigest()[:12]
 
@@ -69,7 +73,7 @@ async def get_db_client() -> AsyncIterator[AsyncSurreal]:
 # Load a single parsed file into SurrealDB
 # ---------------------------------------------------------------------------
 
-async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
+async def load_file(parsed: dict, db: AsyncSurreal, repo_path: str | None = None) -> dict:
     """Upsert one file's nodes and edges. Returns count dict."""
     path = parsed["path"]
     fid = _file_id(path)
@@ -79,6 +83,15 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
         "UPSERT type::record('file', $id) SET path = $path, line_count = $lc, language = 'python'",
         {"id": fid, "path": path, "lc": parsed["line_count"]},
     )
+
+    # Upsert repo node + in_repo edge (folder → repo)
+    if repo_path:
+        repoid = _repo_id(repo_path)
+        repo_name = os.path.basename(repo_path.rstrip("/"))
+        await db.query(
+            "UPSERT type::record('repo', $id) SET path = $path, name = $name",
+            {"id": repoid, "path": repo_path, "name": repo_name},
+        )
 
     # Upsert parent folder node + in_folder edge
     folder_path = os.path.dirname(path)
@@ -92,6 +105,13 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
         "INSERT RELATION INTO in_folder { id: type::record('in_folder', $eid), in: type::record('file', $fid), out: type::record('folder', $folderid) } ON DUPLICATE KEY UPDATE in = in",
         {"eid": eid, "fid": fid, "folderid": folderid},
     )
+
+    if repo_path:
+        eid = _edge_id(folderid, "in_repo", repoid)
+        await db.query(
+            "INSERT RELATION INTO in_repo { id: type::record('in_repo', $eid), in: type::record('folder', $folderid), out: type::record('repo', $repoid) } ON DUPLICATE KEY UPDATE in = in",
+            {"eid": eid, "folderid": folderid, "repoid": repoid},
+        )
 
     fn_count = 0
     class_count = 0

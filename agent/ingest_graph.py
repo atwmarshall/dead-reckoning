@@ -46,7 +46,7 @@ def _process_file(state: IngestionState) -> dict:
 
     async def _load():
         async with get_db_client() as db:
-            await load_file(parsed, db)
+            await load_file(parsed, db, repo_path=state["repo_path"])
 
     asyncio.run(_load())
 

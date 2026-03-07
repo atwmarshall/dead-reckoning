@@ -16,7 +16,7 @@ SCHEMA_PATH = Path(__file__).parent.parent / "ingestion" / "schema.surql"
 DEMO_REPO = "/tmp/demo-repo"
 
 # All tables to wipe — knowledge graph + LangGraph checkpoint tables
-ALL_TABLES = ["file", "`function`", "`class`", "contains", "imports", "calls", "inherits", "checkpoint", "`write`"]
+ALL_TABLES = ["repo", "folder", "file", "`function`", "`class`", "contains", "imports", "calls", "inherits", "in_folder", "in_repo", "checkpoint", "`write`"]
 
 
 async def reset_database() -> None:
@@ -76,7 +76,7 @@ async def ingest(repo_path: str) -> None:
         for i, parsed in enumerate(files, 1):
             short = parsed["path"].replace(repo_path, "").lstrip("/")
             print(f"  [{i}/{total}] {short}")
-            await load_file(parsed, db)
+            await load_file(parsed, db, repo_path=repo_path)
 
 
 async def main() -> None:
