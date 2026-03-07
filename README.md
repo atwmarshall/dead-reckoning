@@ -54,6 +54,7 @@ The 46 nodes already built are still in the graph.
 # 1. Clone and install
 git clone https://github.com/YOUR_USERNAME/dead-reckoning
 cd dead-reckoning
+uv venv
 uv sync
 
 # 2. Pull Ollama models
