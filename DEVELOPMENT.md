@@ -444,14 +444,14 @@ python demo/seed_demo.py
 **Files:** `README.md`, `requirements.txt`, `.env.example`
 
 **Build:**
-- `requirements.txt` — `pip freeze > requirements.txt` then trim to only direct deps
+- `pyproject.toml` + `uv.lock` — managed by uv; `uv sync` installs all deps
 - `.env.example` — all env var names, no values, with comments
 - README: verify quickstart instructions work from a clean clone (test on your own machine)
 
 **Test:**
 ```bash
-# In a fresh virtualenv:
-pip install -r requirements.txt
+# In a fresh clone:
+uv sync
 cp .env.example .env
 # Fill in real values
 python ingestion/seed.py --repo /tmp/demo-repo

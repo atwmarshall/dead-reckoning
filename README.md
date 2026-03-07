@@ -44,42 +44,68 @@ The 46 nodes already built are still in the graph.
 
 ## Quickstart
 
+**Prerequisites:**
+- [uv](https://docs.astral.sh/uv/) — Python package manager
+- [Ollama](https://ollama.com) — running locally
+- [SurrealDB Cloud](https://surrealdb.com/cloud) — free instance (or self-hosted)
+- [LangSmith](https://smith.langchain.com) — API key for tracing
+
 ```bash
-# 1. Clone
+# 1. Clone and install
 git clone https://github.com/YOUR_USERNAME/dead-reckoning
 cd dead-reckoning
+uv sync
 
-# 2. Install
-pip install -r requirements.txt
-
-# 3. Pull Ollama models (must have Ollama installed: ollama.com)
-ollama pull gemma3:4b        # dev/testing
-ollama pull gemma3:27b       # prod demo
+# 2. Pull Ollama models
+ollama pull gemma3:4b        # LLM for dev/testing
 ollama pull nomic-embed-text # embeddings
 
-# 4. Configure
+# 3. Configure environment
 cp .env.example .env
-# Fill in: SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, LANGCHAIN_API_KEY
-# Set OLLAMA_MODEL=gemma3:4b for dev or gemma3:27b for demo
+# Edit .env — fill in SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, LANGCHAIN_API_KEY
 
-# 4. Set up SurrealDB schema
+# 4. Apply SurrealDB schema (one-time setup)
 surreal import --conn $SURREALDB_URL --user $SURREALDB_USER \
   --pass $SURREALDB_PASS --ns hackathon --db deadreckoning \
   ingestion/schema.surql
 
 # 5. Ingest a repo
-python ingestion/seed.py --repo /path/to/any/python/repo
+uv run python ingestion/seed.py --repo /path/to/any/python/repo
 
 # 6. Run the UI
-streamlit run ui/app.py
+uv run streamlit run ui/app.py
 ```
+
+**To demo interrupt/resume:**
+```bash
+# Start ingestion, kill it partway through (Ctrl-C), then re-run the same command.
+# It resumes from the last checkpoint — already-processed files are skipped.
+uv run python ingestion/seed.py --repo /path/to/any/python/repo
+```
+
+---
+
+## Demo reset
+
+Wipes all data, reapplies schema, and re-ingests the demo repo in one command:
+
+```bash
+# Clone the demo repo (httpx) if you haven't already
+git clone https://github.com/encode/httpx /tmp/demo-repo
+
+# Full reset + ingest (run this before any live demo)
+uv run python demo/seed_demo.py
+# Demo ready. Files: 34 | Functions: 287 | Classes: 42
+```
+
+See [`demo/DEMO_SCRIPT.md`](./demo/DEMO_SCRIPT.md) for the exact live judging script.
 
 ---
 
 ## Repo structure
 
 ```
-codebase-navigator/
+dead-reckoning/
 ├── ingestion/
 │   ├── parser.py          # AST extraction: files, functions, classes, imports
 │   ├── loader.py          # Upsert entities + edges into SurrealDB
@@ -99,7 +125,7 @@ codebase-navigator/
 │   ├── test_loader.py
 │   └── test_agent.py
 ├── .env.example
-├── requirements.txt
+├── pyproject.toml
 ├── ARCHITECTURE.md        # Schema, integration points, design decisions
 ├── DEVELOPMENT.md         # Ordered build tasks with success criteria
 └── README.md

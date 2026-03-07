@@ -41,3 +41,5 @@ htmlcov/
 
 # Streamlit
 .streamlit/secrets.toml
+.playwright-mcp
+*.png
