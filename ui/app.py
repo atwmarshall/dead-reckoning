@@ -213,8 +213,13 @@ def _fetch_graph_data(ingestion_id: str | None = None) -> tuple:
             contains_edges = await db.query("SELECT in, out FROM contains LIMIT 5000")
             folder_edges   = await db.query("SELECT in, out FROM in_folder LIMIT 5000")
             repo_edges     = await db.query("SELECT in, out FROM in_repo LIMIT 5000")
+            imports_edges  = await db.query("SELECT in, out FROM imports LIMIT 5000")
+            calls_edges    = await db.query("SELECT in, out FROM calls LIMIT 5000")
+            inherits_edges = await db.query("SELECT in, out FROM inherits LIMIT 5000")
 
-        return repos, folders, files, fns, classes, contains_edges, folder_edges, repo_edges
+        return (repos, folders, files, fns, classes,
+                contains_edges, folder_edges, repo_edges,
+                imports_edges, calls_edges, inherits_edges)
 
     return asyncio.run(_query())
 
@@ -222,6 +227,7 @@ def _fetch_graph_data(ingestion_id: str | None = None) -> tuple:
 def _build_agraph(
     repos, folders, files, fns, classes,
     contains_raw, folder_edges_raw, repo_edges_raw,
+    imports_raw=None, calls_raw=None, inherits_raw=None,
     diff_highlights: dict | None = None,
 ) -> tuple[list, list]:
     nodes: list[Node] = []
@@ -265,25 +271,171 @@ def _build_agraph(
             nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
             seen.add(nid)
 
-    for row in _get_rows(contains_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
-
-    for row in _get_rows(folder_edges_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
-
-    for row in _get_rows(repo_edges_raw):
-        src = str(row.get("in", ""))
-        dst = str(row.get("out", ""))
-        if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
+    edge_sources = [
+        (contains_raw, "contains"),
+        (folder_edges_raw, "in_folder"),
+        (repo_edges_raw, "in_repo"),
+        (imports_raw, "imports"),
+        (calls_raw, "calls"),
+        (inherits_raw, "inherits"),
+    ]
+    for raw, label in edge_sources:
+        if raw is None:
+            continue
+        for row in _get_rows(raw):
+            src = str(row.get("in", ""))
+            dst = str(row.get("out", ""))
+            if src and dst and src in seen and dst in seen:
+                edges.append(Edge(source=src, target=dst, label=label))
 
     return nodes, edges
+
+
+# ── Node detail helpers ───────────────────────────────────────────────────
+
+EDGE_TABLES = ["contains", "in_folder", "in_repo", "imports", "calls", "inherits"]
+
+NODE_TYPE_COLORS = {
+    "repo": REPO_COLOR, "folder": FOLDER_COLOR, "file": FILE_COLOR,
+    "function": FUNC_COLOR, "class": CLASS_COLOR,
+}
+
+
+def _fetch_node_detail(node_id: str) -> dict:
+    """Fetch properties, edge counts, and neighbors for a node."""
+    # SurrealDB record IDs look like "function:abc123"
+    table = node_id.split(":")[0] if ":" in node_id else "unknown"
+
+    async def _query():
+        async with get_db_client() as db:
+            # 1. Fetch all properties
+            props_raw = await db.query(f"SELECT * FROM {node_id}")
+            props = {}
+            rows = _get_rows(props_raw)
+            if rows:
+                props = dict(rows[0])
+
+            # 2. Count relationships and fetch neighbors per edge table
+            edge_counts = {}
+            neighbors = {}
+            for et in EDGE_TABLES:
+                # Incoming: this node is the target (out)
+                in_count_raw = await db.query(
+                    f"SELECT count() AS cnt FROM {et} WHERE out = {node_id} GROUP ALL"
+                )
+                in_cnt = 0
+                in_rows = _get_rows(in_count_raw)
+                if in_rows:
+                    in_cnt = in_rows[0].get("cnt", 0)
+
+                # Outgoing: this node is the source (in)
+                out_count_raw = await db.query(
+                    f"SELECT count() AS cnt FROM {et} WHERE in = {node_id} GROUP ALL"
+                )
+                out_cnt = 0
+                out_rows = _get_rows(out_count_raw)
+                if out_rows:
+                    out_cnt = out_rows[0].get("cnt", 0)
+
+                if in_cnt or out_cnt:
+                    edge_counts[et] = {"incoming": in_cnt, "outgoing": out_cnt}
+
+                # Fetch neighbor IDs (up to 20 per direction)
+                et_neighbors = []
+                if out_cnt:
+                    out_neighbors_raw = await db.query(
+                        f"SELECT out AS target FROM {et} WHERE in = {node_id} LIMIT 20"
+                    )
+                    for r in _get_rows(out_neighbors_raw):
+                        tid = str(r.get("target", ""))
+                        if tid:
+                            et_neighbors.append({"id": tid, "direction": "outgoing"})
+
+                if in_cnt:
+                    in_neighbors_raw = await db.query(
+                        f"SELECT in AS source FROM {et} WHERE out = {node_id} LIMIT 20"
+                    )
+                    for r in _get_rows(in_neighbors_raw):
+                        sid = str(r.get("source", ""))
+                        if sid:
+                            et_neighbors.append({"id": sid, "direction": "incoming"})
+
+                if et_neighbors:
+                    neighbors[et] = et_neighbors
+
+        return {"id": node_id, "table": table, "properties": props,
+                "edge_counts": edge_counts, "neighbors": neighbors}
+
+    return asyncio.run(_query())
+
+
+def _render_detail_panel(detail: dict) -> None:
+    """Render node detail panel below the graph."""
+    table = detail["table"]
+    props = detail["properties"]
+    color = NODE_TYPE_COLORS.get(table, "#888")
+
+    # Header
+    display_name = props.get("name") or props.get("path") or detail["id"]
+    st.markdown(
+        f'<h4 style="color:{color}; margin-bottom:0">'
+        f'{table.upper()}: {display_name}</h4>',
+        unsafe_allow_html=True,
+    )
+
+    # Close button
+    if st.button("Close detail panel", key="close_detail"):
+        st.session_state["selected_node_id"] = None
+        st.session_state["selected_node_detail"] = None
+        st.rerun(scope="fragment")
+
+    prop_col, rel_col = st.columns(2)
+
+    # Properties
+    with prop_col:
+        st.subheader("Properties")
+        skip_keys = {"embedding", "id"}
+        for k, v in props.items():
+            if k in skip_keys:
+                continue
+            # Truncate long values
+            v_str = str(v)
+            if len(v_str) > 300:
+                v_str = v_str[:300] + "…"
+            st.markdown(f"**{k}:** {v_str}")
+
+    # Relationships
+    with rel_col:
+        st.subheader("Relationships")
+        edge_counts = detail.get("edge_counts", {})
+        if not edge_counts:
+            st.caption("No relationships found.")
+        else:
+            for et, counts in edge_counts.items():
+                st.markdown(
+                    f"**{et}:** {counts['outgoing']} outgoing, "
+                    f"{counts['incoming']} incoming"
+                )
+
+    # Neighbors
+    neighbors = detail.get("neighbors", {})
+    if neighbors:
+        st.subheader("Connected Nodes")
+        for et, neighbor_list in neighbors.items():
+            st.markdown(f"**{et}**")
+            for nb in neighbor_list:
+                nb_id = nb["id"]
+                nb_table = nb_id.split(":")[0] if ":" in nb_id else "?"
+                arrow = "->" if nb["direction"] == "outgoing" else "<-"
+                btn_label = f"{arrow} [{nb_table}] {nb_id}"
+                if st.button(
+                    btn_label,
+                    key=f"nav_{et}_{nb['direction']}_{nb_id}",
+                    help=f"Navigate to {nb_id}",
+                ):
+                    st.session_state["selected_node_id"] = nb_id
+                    st.session_state["selected_node_detail"] = None
+                    st.rerun(scope="fragment")
 
 
 # ── Context graph helpers ──────────────────────────────────────────────────
@@ -451,6 +603,8 @@ def _init_state() -> None:
         "ctx_query": "",
         "graph_interval": 60,
         "graph_last_refreshed": "",
+        "selected_node_id": None,
+        "selected_node_detail": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -776,7 +930,10 @@ with tab_graph:
                         width="100%", height=540,
                         directed=True, physics=True, hierarchical=False,
                     )
-                    agraph(nodes=g_nodes, edges=g_edges, config=cfg)
+                    clicked_node = agraph(nodes=g_nodes, edges=g_edges, config=cfg)
+                    if clicked_node and clicked_node != st.session_state.get("selected_node_id"):
+                        st.session_state["selected_node_id"] = clicked_node
+                        st.session_state["selected_node_detail"] = None
                 else:
                     st.info("No nodes yet — select a version or run ingestion.")
 
@@ -824,6 +981,21 @@ with tab_graph:
                 st.session_state["_ingestion_was_running"] = True
             elif st.session_state.pop("_ingestion_was_running", False):
                 st.rerun(scope="app")
+
+        # ── Node detail panel (inside fragment so it updates on click) ──
+        selected = st.session_state.get("selected_node_id")
+        if selected:
+            st.divider()
+            detail = st.session_state.get("selected_node_detail")
+            if detail is None or detail.get("id") != selected:
+                try:
+                    detail = _fetch_node_detail(selected)
+                    st.session_state["selected_node_detail"] = detail
+                except Exception as exc:
+                    st.error(f"Could not load node detail: {exc}")
+                    detail = None
+            if detail:
+                _render_detail_panel(detail)
 
     _graph_fragment()
 
