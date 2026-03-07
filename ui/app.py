@@ -253,6 +253,7 @@ with tab_graph:
         except Exception as exc:
             st.session_state["graph_error"] = str(exc)
             st.session_state.pop("graph_nodes", None)
+        st.rerun()
 
     if "graph_error" in st.session_state:
         st.error(f"Could not load graph: {st.session_state['graph_error']}")
