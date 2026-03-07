@@ -206,7 +206,13 @@ class DeadReckoningRetriever:
             cutoff = self.limit
 
         enriched = await asyncio.gather(*[self._enrich(doc) for doc in merged[:cutoff]])
-        return [self._format(doc) for doc in enriched]
+        results = [self._format(doc) for doc in enriched]
+        if cutoff == self.limit and len(merged) > self.limit:
+            results.append(
+                f"note: results truncated at {self.limit}. "
+                f"Refine your query or use explain_module with a filename to explore further."
+            )
+        return results
 
 
 _retriever = DeadReckoningRetriever()
