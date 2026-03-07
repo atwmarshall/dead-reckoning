@@ -46,7 +46,7 @@ class DeadReckoningRetriever:
     """Hybrid retriever combining vector similarity and keyword graph search
     via Reciprocal Rank Fusion (RRF)."""
 
-    def __init__(self, k: int = 60, limit: int = 5, semantic_threshold: float = 0.65):
+    def __init__(self, k: int = 60, limit: int = 5, semantic_threshold: float = 0.55):
         self.k = k
         self.limit = limit
         self.semantic_threshold = semantic_threshold
@@ -55,9 +55,19 @@ class DeadReckoningRetriever:
             base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         )
 
+    @staticmethod
+    def _camel_split(token: str) -> list[str]:
+        """Split CamelCase into parts: DigestAuth → ['Digest', 'Auth']."""
+        parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)", token)
+        return parts if parts else [token]
+
     def _extract_terms(self, query: str) -> list[str]:
-        tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", query.lower())
-        return [t for t in tokens if t not in _STOP_WORDS and len(t) > 2]
+        raw = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", query)
+        expanded = []
+        for t in raw:
+            expanded.extend(self._camel_split(t))
+        terms = [t.lower() for t in expanded if len(t) > 2]
+        return [t for t in terms if t not in _STOP_WORDS]
 
     @traceable(
         name="semantic_search",
