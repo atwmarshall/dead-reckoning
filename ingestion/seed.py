@@ -16,7 +16,7 @@ async def seed(repo_path: str) -> None:
         for i, parsed in enumerate(files, 1):
             short = parsed["path"].replace(repo_path, "").lstrip("/")
             print(f"[{i}/{total}] {short}")
-            counts = await load_file(parsed, db)
+            counts = await load_file(parsed, db, repo_path=repo_path)
             for k in totals:
                 totals[k] += counts[k]
 
