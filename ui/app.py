@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -16,6 +17,34 @@ FOLDER_COLOR = "#F39C12"  # orange
 FILE_COLOR = "#4C8BF5"   # blue
 FUNC_COLOR = "#9B59B6"   # purple
 CLASS_COLOR = "#27AE60"  # green
+
+# Matches file paths like /abs/path/file.py:42 or rel/path/file.py:42
+# Requires at least one slash so dotted names (agent.graph) are excluded.
+_PATH_RE = re.compile(
+    r"`((?:/[\w./-]+\.\w{1,6})(?::\d+)?)`"          # `backtick-wrapped`
+    r"|(?<![\[(`/])((?:/[\w./-]+\.\w{1,6})(?::\d+)?)"  # /absolute/path.ext
+    r"|(?<![\[(`/\w])((?:[\w.-]+/)+[\w.-]+\.\w{1,6}(?::\d+)?)"  # relative/path.ext
+)
+
+
+def _linkify_paths(text: str, repo_path: str = "") -> str:
+    """Replace file paths in text with vscode:// clickable markdown links."""
+    def _make_link(raw: str) -> str:
+        path_part, _, line_part = raw.partition(":")
+        if path_part.startswith("/"):
+            abs_path = path_part
+        elif repo_path:
+            abs_path = f"{repo_path.rstrip('/')}/{path_part}"
+        else:
+            return f"`{raw}`"
+        url = f"vscode://file{abs_path}" + (f":{line_part}" if line_part else "")
+        return f"[`{raw}`]({url})"
+
+    def _replace(m: re.Match) -> str:
+        raw = m.group(1) or m.group(2) or m.group(3)
+        return _make_link(raw)
+
+    return _PATH_RE.sub(_replace, text)
 
 
 # ── Background ingestion thread ────────────────────────────────────────────
@@ -459,14 +488,15 @@ with tab_chat:
     chat_col, graph_col = st.columns([3, 2])
 
     with chat_col:
+        repo = st.session_state.get("repo_path_input", "")
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+                st.markdown(_linkify_paths(msg["content"], repo))
 
         if prompt := st.chat_input("Ask anything about the codebase…"):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
-                st.write(prompt)
+                st.markdown(prompt)
 
             with st.chat_message("assistant"):
                 with st.spinner("Thinking…"):
@@ -488,7 +518,7 @@ with tab_chat:
                     except Exception as exc:
                         response = f"Error: {exc}"
 
-                st.write(response)
+                st.markdown(_linkify_paths(response, st.session_state.get("repo_path_input", "")))
 
             st.session_state.messages.append({"role": "assistant", "content": response})
 
