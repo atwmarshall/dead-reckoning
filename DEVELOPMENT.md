@@ -14,8 +14,8 @@ pip install surrealdb langgraph langgraph-checkpoint-surrealdb \
             streamlit streamlit-agraph
 
 # Ollama must be running locally with models pulled:
-# ollama pull gemma3:4b        # dev/testing
-# ollama pull gemma3:27b       # prod demo
+# ollama pull llama3.2:3b      # dev/testing (supports tools protocol)
+# ollama pull gpt-oss:20b      # prod demo (supports tools protocol; thinking disabled via model_kwargs)
 # ollama pull nomic-embed-text # embeddings
 ```
 
@@ -252,7 +252,7 @@ print('DEV-07 PASS')
 
 **Build:** 
 1. `build_query_agent()` — returns compiled LangGraph agent with checkpointer
-2. Nodes: `llm_node` (calls Ollama (gemma3) with tools bound), `tools_node` (runs tool calls)
+2. Nodes: `llm_node` (calls Ollama (llama3.2:3b or gpt-oss:20b) with tools bound), `tools_node` (runs tool calls)
 3. Conditional edge: if response has tool calls → tools_node, else → END
 4. Compile with `SurrealDBSaver` checkpointer
 
