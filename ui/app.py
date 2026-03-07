@@ -14,6 +14,7 @@ from streamlit_agraph import Config, Edge, Node, agraph
 
 from agent.graph import build_query_agent
 from agent.ingest_graph import build_ingestion_agent
+from langgraph.types import Command
 from ingestion.diff import DiffEngine
 from ingestion.github import clone_repo, is_github_url
 from ingestion.loader import (
@@ -102,7 +103,7 @@ def _run_ingestion(
             asyncio.run(_run_diff())
             diff_status_log.append(f"Diff complete — {len(diff_highlights)} nodes highlighted.")
 
-        # 3. Run LangGraph ingestion agent
+        # 3. Run LangGraph ingestion agent — phase 1: initialize + review_diff
         progress["status"] = "running"
         agent = build_ingestion_agent()
         config = {"configurable": {"thread_id": thread_id}}
@@ -110,12 +111,31 @@ def _run_ingestion(
             "repo_path": repo_path,
             "disk_path": disk_path,
             "ingestion_id": ingestion_id,
+            "prev_ingestion_id": prev_ingestion_id or "",
             "all_files": [],
             "processed_files": [],
             "current_file": "",
         }
 
         for chunk in agent.stream(init_state, config, stream_mode="values"):
+            pass  # initialize runs; review_diff interrupts → stream ends if prev_ingestion_id
+
+        # 3b. If interrupted (prev_ingestion_id was set), wait for user to confirm
+        graph_state = agent.get_state(config)
+        if graph_state.next:
+            progress["status"] = "awaiting_resume"
+            resume_event = progress.get("resume_event")
+            resume_event.wait()  # block thread until UI signals Continue
+            if stop_event.is_set():
+                progress["status"] = "stopped"
+                return
+            progress["status"] = "running"
+            stream_cmd = Command(resume=True)
+        else:
+            stream_cmd = None  # fresh ingest already finished in one stream
+
+        # 3c. Process files
+        def _update_progress(chunk):
             processed = chunk.get("processed_files") or []
             all_files = chunk.get("all_files") or []
             progress["processed"] = len(processed)
@@ -123,7 +143,6 @@ def _run_ingestion(
 
             current = chunk.get("current_file", "")
             if current:
-                # Clear corresponding prev-version highlight as we re-ingest
                 if prev_ingestion_id:
                     prev_node_id = (
                         "file:"
@@ -132,9 +151,12 @@ def _run_ingestion(
                     diff_highlights.pop(prev_node_id, None)
                 diff_status_log.append(f"Ingested: {Path(current).name}")
 
-            if stop_event.is_set():
-                progress["status"] = "stopped"
-                return
+        if stream_cmd is not None:
+            for chunk in agent.stream(stream_cmd, config, stream_mode="values"):
+                _update_progress(chunk)
+                if stop_event.is_set():
+                    progress["status"] = "stopped"
+                    return
 
         # 4. Clear diff_status from prev version's nodes in DB
         if prev_ingestion_id:
@@ -627,11 +649,13 @@ def _start_ingestion(pending: dict, prev_ingestion_id: str | None) -> None:
     )
 
     stop_event = threading.Event()
+    resume_event = threading.Event()
     diff_highlights: dict = {}
     diff_status_log: list = []
     new_progress: dict = {
         "processed": 0, "total": 0, "status": "running",
         "diff_base_iid": prev_ingestion_id,
+        "resume_event": resume_event,
     }
 
     st.session_state.ingest_thread_id = thread_id
@@ -782,7 +806,11 @@ with st.sidebar:
     if interrupt_clicked:
         if st.session_state.ingest_stop_event:
             st.session_state.ingest_stop_event.set()
-            st.session_state.ingest_progress["status"] = "stopping"
+        p = st.session_state.ingest_progress
+        resume_ev = p.get("resume_event")
+        if resume_ev:
+            resume_ev.set()  # unblock thread if waiting at diff review
+        p["status"] = "stopping"
         st.rerun()
 
     # ── Repo / version selector ─────────────────────────────────────────
@@ -837,7 +865,7 @@ with st.sidebar:
     total = p.get("total", 0)
     status = p.get("status", "idle")
 
-    if is_alive and status not in ("running", "stopping"):
+    if is_alive and status not in ("running", "stopping", "awaiting_resume"):
         status = "running"
 
     if status == "running":
@@ -845,6 +873,8 @@ with st.sidebar:
         st.info(label)
         if total > 0:
             st.progress(processed / total)
+    elif status == "awaiting_resume":
+        st.info("Diff ready — see graph panel to continue.")
     elif status == "stopping":
         st.warning(f"Stopping… {processed} / {total}")
         if total > 0:
@@ -954,6 +984,12 @@ with tab_graph:
                     st.progress(_processed / _total, text=f"{_processed}/{_total} files")
                 else:
                     st.write("Starting…")
+            elif _status == "awaiting_resume":
+                st.info("Diff computed — review the coloured graph, then continue.")
+                if st.button("Continue ingestion ▶", type="primary", use_container_width=True):
+                    st.session_state.ingest_progress["resume_event"].set()
+                    st.session_state.ingest_progress["status"] = "running"
+                    st.rerun(scope="fragment")
             elif _status == "done":
                 st.success("Ingestion complete.")
             elif _status == "error":

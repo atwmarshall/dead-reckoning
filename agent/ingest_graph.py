@@ -6,6 +6,7 @@ from typing import Annotated
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 from langgraph_checkpoint_surrealdb import SurrealSaver
 from typing_extensions import TypedDict
 
@@ -22,6 +23,7 @@ class IngestionState(TypedDict):
     repo_path: str      # canonical identifier stored in DB (URL or local path)
     disk_path: str      # actual filesystem path used for parsing (same as repo_path for local)
     ingestion_id: str
+    prev_ingestion_id: str  # empty string for fresh ingests
     all_files: list[str]
     processed_files: list[str]
     current_file: str
@@ -94,6 +96,13 @@ def _finalize(state: IngestionState) -> dict:
     return {}
 
 
+def _review_diff(state: IngestionState) -> dict:
+    """Pause for user to review diff colours. No-op on fresh ingests."""
+    if state.get("prev_ingestion_id"):
+        interrupt("diff_review")
+    return {}
+
+
 def _has_more(state: IngestionState) -> str:
     processed = set(state.get("processed_files") or [])
     remaining = [f for f in (state.get("all_files") or []) if f not in processed]
@@ -114,11 +123,13 @@ def build_ingestion_agent():
 
     graph = StateGraph(IngestionState)
     graph.add_node("initialize", _initialize)
+    graph.add_node("review_diff", _review_diff)
     graph.add_node("process_file", _process_file)
     graph.add_node("finalize", _finalize)
     graph.set_entry_point("initialize")
+    graph.add_edge("initialize", "review_diff")
     graph.add_conditional_edges(
-        "initialize", _has_more,
+        "review_diff", _has_more,
         {"process_file": "process_file", "finalize": "finalize"},
     )
     graph.add_conditional_edges(
