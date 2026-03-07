@@ -1,0 +1,27 @@
+[project]
+name = "dead-reckoning"
+version = "0.1.0"
+description = "Navigate any codebase. Parse Python repos into a SurrealDB knowledge graph and query with a LangGraph agent."
+requires-python = ">=3.11"
+dependencies = [
+    "surrealdb>=1.0",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-surrealdb>=0.1",
+    "langchain-ollama>=0.2",
+    "python-dotenv>=1.0",
+    "streamlit>=1.40",
+    "streamlit-agraph>=0.0.45",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ingestion", "agent", "ui"]
