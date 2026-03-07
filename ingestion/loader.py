@@ -1,13 +1,21 @@
 import hashlib
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+import ollama as ollama_client
 from dotenv import load_dotenv
-from langchain_ollama import OllamaEmbeddings
 from surrealdb import AsyncSurreal
 
 load_dotenv()
+
+
+def _strip_markdown(text: str) -> str:
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(r'`[^`]+`', '', text)
+    text = re.sub(r'\*+', '', text)
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -71,16 +79,16 @@ async def load_file(parsed: dict, db: AsyncSurreal) -> dict:
     class_count = 0
     edge_count = 0
 
-    # Batch-embed function docstrings
-    embeddings_model = OllamaEmbeddings(
-        model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
-        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-    )
+    # Batch-embed function docstrings via async Ollama client
+    embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    embed_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     fns_with_docs = [(i, fn) for i, fn in enumerate(parsed["functions"]) if fn.get("docstring")]
     embeddings_map: dict[int, list[float]] = {}
     if fns_with_docs:
-        docs = [fn["docstring"] for _, fn in fns_with_docs]
-        vecs = embeddings_model.embed_documents(docs)
+        docs = [_strip_markdown(fn["docstring"]) for _, fn in fns_with_docs]
+        client = ollama_client.AsyncClient(host=embed_host)
+        response = await client.embed(model=embed_model, input=docs)
+        vecs = response.embeddings
         embeddings_map = {i: vec for (i, _), vec in zip(fns_with_docs, vecs)}
 
     # Upsert functions + contains edges
