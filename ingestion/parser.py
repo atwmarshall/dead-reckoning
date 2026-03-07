@@ -17,6 +17,7 @@ def parse_file(path: str) -> dict:
                 "lineno": node.lineno,
                 "docstring": ast.get_docstring(node),
                 "class_name": None,
+                "calls": _extract_calls(node),
             })
 
         elif isinstance(node, ast.ClassDef):
@@ -38,6 +39,7 @@ def parse_file(path: str) -> dict:
                         "lineno": child.lineno,
                         "docstring": ast.get_docstring(child),
                         "class_name": node.name,
+                        "calls": _extract_calls(child),
                     })
 
     for node in ast.walk(tree):
@@ -55,6 +57,17 @@ def parse_file(path: str) -> dict:
         "classes": classes,
         "imports": list(dict.fromkeys(imports)),
     }
+
+
+def _extract_calls(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    calls = []
+    for n in ast.walk(fn_node):
+        if isinstance(n, ast.Call):
+            if isinstance(n.func, ast.Name):
+                calls.append(n.func.id)
+            elif isinstance(n.func, ast.Attribute):
+                calls.append(n.func.attr)
+    return list(dict.fromkeys(calls))
 
 
 def _dotted(node: ast.Attribute) -> str:
