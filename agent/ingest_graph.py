@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger("dead-reckoning.ingest")
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
@@ -32,11 +35,13 @@ class IngestionState(TypedDict):
 def _initialize(state: IngestionState) -> dict:
     """Populate all_files from the repo on first run. No-op on resume."""
     if state.get("all_files"):
+        logger.info("Resume: all_files already populated (%d files)", len(state["all_files"]))
         return {}
     disk = state.get("disk_path") or state["repo_path"]
+    logger.info("Discovering files in %s", disk)
     parsed = parse_repo(disk)
     all_files = [p["path"] for p in parsed]
-    print(f"Found {len(all_files)} files to ingest.")
+    logger.info("Found %d files to ingest", len(all_files))
     return {"all_files": all_files, "processed_files": [], "current_file": ""}
 
 
@@ -70,11 +75,13 @@ def _process_file(state: IngestionState) -> dict:
                 disk_path=disk,
             )
 
+    logger.info("Loading %s into SurrealDB...", Path(current).name)
     asyncio.run(_load())
+    logger.info("Loaded %s", Path(current).name)
 
     new_processed = list(state.get("processed_files") or []) + [current]
     total = len(state["all_files"])
-    print(f"[{len(new_processed)}/{total}] processed: {Path(current).name}")
+    logger.info("[%d/%d] processed: %s", len(new_processed), total, Path(current).name)
 
     return {"processed_files": new_processed, "current_file": current}
 
@@ -92,7 +99,7 @@ def _finalize(state: IngestionState) -> dict:
             await finalize_ingestion(db, ingestion_id, file_count)
 
     asyncio.run(_do_finalize())
-    print(f"Ingestion {ingestion_id} finalized: {file_count} files.")
+    logger.info("Ingestion %s finalized: %d files", ingestion_id, file_count)
     return {}
 
 
@@ -119,12 +126,14 @@ def _create_call_edges(state: IngestionState) -> dict:
             return await load_calls(parsed_files, db, ingestion_id=state.get("ingestion_id", ""))
 
     count = asyncio.run(_load())
-    print(f"Call edges created: {count}")
+    logger.info("Call edges created: %d", count)
     return {}
 
 
 def build_ingestion_agent():
+    logger.info("Building ingestion agent — ensuring checkpoint tables...")
     asyncio.run(_ensure_checkpoint_tables())
+    logger.info("Checkpoint tables ready, creating SurrealSaver...")
 
     checkpointer = SurrealSaver(
         url=os.environ["SURREALDB_URL"],
@@ -133,7 +142,9 @@ def build_ingestion_agent():
         user=os.environ["SURREALDB_USER"],
         password=os.environ["SURREALDB_PASS"],
     )
+    logger.info("Calling checkpointer.setup()...")
     checkpointer.setup()
+    logger.info("Checkpointer ready, compiling graph...")
 
     graph = StateGraph(IngestionState)
     graph.add_node("initialize", _initialize)

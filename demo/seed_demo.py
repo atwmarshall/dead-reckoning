@@ -73,10 +73,21 @@ async def reset_database() -> None:
     await db.close()
 
 
-async def ingest_version(repo_path: Path, label: str) -> str:
-    """Ingest a repo version with proper ingestion record + snapshot. Returns ingestion_id."""
+async def ingest_version(
+    repo_path: Path,
+    label: str,
+    *,
+    disk_path: Path | None = None,
+) -> str:
+    """Ingest a repo version with proper ingestion record + snapshot. Returns ingestion_id.
+
+    repo_path  – canonical identifier stored in DB (used for conflict detection).
+    disk_path  – actual filesystem path to parse. Defaults to repo_path.
+    """
+    disk = disk_path or repo_path
     repo_str = str(repo_path.resolve())
-    parsed_files = parse_repo(repo_str)
+    disk_str = str(disk.resolve())
+    parsed_files = parse_repo(disk_str)
     total = len(parsed_files)
 
     async with get_db_client() as db:
@@ -86,7 +97,7 @@ async def ingest_version(repo_path: Path, label: str) -> str:
         print(f"  Ingestion ID: {ingestion_id}")
 
         # Create tar snapshot
-        snap = create_snapshot(repo_str, iid_bare)
+        snap = create_snapshot(disk_str, iid_bare)
         print(f"  Snapshot: {snap}")
 
         # Load all files
@@ -102,7 +113,7 @@ async def ingest_version(repo_path: Path, label: str) -> str:
                 repo_path=repo_str,
                 ingestion_id=ingestion_id,
                 content_hash=ch,
-                disk_path=repo_str,
+                disk_path=disk_str,
             )
             print(f"  [{i}/{total}] {short}")
 
@@ -207,14 +218,15 @@ async def main(args) -> None:
         )
         return
 
-    # Ingest v1
+    # Ingest v1 — use FIXTURES as repo_path so both v1 and v2 share the same
+    # canonical path, matching the UI quick-select presets.
     print(f"\nStep 2: Ingesting v1 ({V1_PATH})...")
-    v1_id = await ingest_version(V1_PATH, "v1")
+    v1_id = await ingest_version(FIXTURES, "v1", disk_path=V1_PATH)
 
     # Optionally ingest v2 + diff
     if args.with_v2:
         print(f"\nStep 3: Ingesting v2 ({V2_PATH})...")
-        v2_id = await ingest_version(V2_PATH, "v2")
+        v2_id = await ingest_version(FIXTURES, "v2", disk_path=V2_PATH)
 
         v2_bare = v2_id.split(":", 1)[1] if ":" in v2_id else v2_id
         print(f"\nStep 4: Computing diff (v1 → v2)...")

@@ -1,12 +1,19 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("dead-reckoning.ui")
 
 import streamlit as st
 from langchain_core.messages import ToolMessage
@@ -116,30 +123,36 @@ def _run_ingestion(
     try:
         # 1. Create or reuse ingestion record
         _set_stage("Creating ingestion record...")
+        logger.info("Creating ingestion record for repo_path=%s, disk_path=%s", repo_path, disk_path)
         if existing_ingestion_id:
             ingestion_id = existing_ingestion_id
+            logger.info("Reusing existing ingestion_id=%s", ingestion_id)
         else:
             async def _create():
                 async with get_db_client() as db:
                     return await create_ingestion(db, repo_path, github_url)
 
             ingestion_id = asyncio.run(_create())
+            logger.info("Created ingestion_id=%s", ingestion_id)
 
         progress["ingestion_id"] = ingestion_id
 
         # 1.5. Create tar snapshot of current disk state (non-fatal)
         _set_stage("Creating snapshot...")
+        logger.info("Creating tar snapshot for disk_path=%s", disk_path)
         new_snapshot_path = None
         if not existing_ingestion_id:
             iid_bare = ingestion_id.split(":", 1)[1] if ":" in ingestion_id else ingestion_id
             try:
                 new_snapshot_path = create_snapshot(disk_path, iid_bare)
+                logger.info("Snapshot created: %s", new_snapshot_path)
             except Exception as snap_err:
-                print(f"Snapshot creation failed (non-fatal): {snap_err}")
+                logger.warning("Snapshot creation failed (non-fatal): %s", snap_err)
 
         # 2. Run diff if we have a previous version (skip on resume)
         if prev_ingestion_id and not resume_mode:
             _set_stage("Computing diff...")
+            logger.info("Computing diff: prev_ingestion_id=%s", prev_ingestion_id)
             diff_status_log.append("Computing diff…")
 
             async def _run_diff():
@@ -148,21 +161,27 @@ def _run_ingestion(
                         disk_path, prev_ingestion_id, db, new_snapshot_path=new_snapshot_path
                     ):
                         diff_highlights[event["node_id"]] = event["status"]
+                        name = Path(event.get("path", "?")).name if event.get("path") else event.get("name", "?")
                         diff_status_log.append(
-                            f"{event['status'].upper()}: {Path(event['path']).name}"
+                            f"{event['status'].upper()}: {name}"
                         )
+                        logger.info("Diff event: %s %s (node_id=%s)", event['status'].upper(), name, event.get("node_id"))
 
             asyncio.run(_run_diff())
+            logger.info("Diff complete — %d nodes highlighted", len(diff_highlights))
             diff_status_log.append(f"Diff complete — {len(diff_highlights)} nodes highlighted.")
 
         # 3. Run LangGraph ingestion agent
         _set_stage("Discovering files...")
+        logger.info("Building ingestion agent, thread_id=%s", thread_id)
         progress["status"] = "running"
         agent = build_ingestion_agent()
+        logger.info("Ingestion agent built, starting stream...")
         config = {"configurable": {"thread_id": thread_id}}
 
         if resume_mode:
             # Resume from checkpoint — skip init, just send Command(resume=True)
+            logger.info("Resume mode: sending Command(resume=True)")
             stream_cmd = Command(resume=True)
         else:
             init_state = {
@@ -175,22 +194,21 @@ def _run_ingestion(
                 "current_file": "",
             }
 
+            logger.info("Streaming init_state into agent...")
             for chunk in agent.stream(init_state, config, stream_mode="values"):
-                pass  # initialize runs; review_diff interrupts if prev_ingestion_id
+                logger.info("Init stream chunk keys: %s", list(chunk.keys()) if isinstance(chunk, dict) else type(chunk))
+            logger.info("Init stream complete")
 
-            # 3b. If interrupted (prev_ingestion_id was set), wait for user to confirm
+            # 3b. If interrupted (prev_ingestion_id was set), auto-resume.
+            # Diff colours are already computed and visible — no need to pause.
             graph_state = agent.get_state(config)
+            logger.info("Graph state.next = %s", graph_state.next)
             if graph_state.next:
-                progress["status"] = "awaiting_resume"
-                resume_event = progress.get("resume_event")
-                resume_event.wait()  # block thread until UI signals Continue
-                if stop_event.is_set():
-                    progress["status"] = "stopped"
-                    return
-                progress["status"] = "running"
+                logger.info("Diff review interrupt hit — auto-resuming")
                 stream_cmd = Command(resume=True)
             else:
                 stream_cmd = None  # fresh ingest already finished in one stream
+                logger.info("No interrupt — fresh ingest completed in init stream")
 
         # 3c. Process files
         _set_stage("Processing files...")
@@ -215,11 +233,14 @@ def _run_ingestion(
                 diff_status_log.append(f"Ingested: {Path(current).name}")
 
         if stream_cmd is not None:
+            logger.info("Streaming file processing...")
             for chunk in agent.stream(stream_cmd, config, stream_mode="values"):
                 _update_progress(chunk)
                 if stop_event.is_set():
                     progress["status"] = "stopped"
+                    logger.info("Stop event set during processing")
                     return
+            logger.info("File processing stream complete")
 
         _set_stage("Linking function calls...")
 
@@ -246,10 +267,12 @@ def _run_ingestion(
         progress.pop("diff_base_iid", None)
         _set_stage("Done")
         progress["status"] = "done"
+        logger.info("Ingestion complete for repo_path=%s", repo_path)
 
     except Exception as exc:
         progress["status"] = "error"
         progress["error"] = str(exc)
+        logger.exception("Ingestion failed: %s", exc)
     finally:
         if cleanup_fn:
             try:
@@ -1261,9 +1284,10 @@ with tab_graph:
             g_edges = st.session_state["graph_edges"]
             if g_nodes:
                 st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
+                freeze = st.checkbox("Freeze layout", value=st.session_state.graph_frozen, key="graph_frozen")
                 cfg = Config(
                     width="100%", height=700,
-                    directed=True, physics=True, hierarchical=False,
+                    directed=True, physics=not freeze, hierarchical=False,
                 )
                 clicked_node = agraph(nodes=g_nodes, edges=g_edges, config=cfg)
                 if clicked_node and clicked_node != st.session_state.get("selected_node_id"):
