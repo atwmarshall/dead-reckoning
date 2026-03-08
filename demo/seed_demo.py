@@ -1,9 +1,10 @@
 """Demo seed script — sets up v1 (and optionally v2 + diff) for the live demo.
 
 Usage:
-    uv run python demo/seed_demo.py               # v1 fixture only (before judges arrive)
-    uv run python demo/seed_demo.py --with-v2      # v1 + v2 + diff (for testing)
-    uv run python demo/seed_demo.py --httpx         # ingest httpx (well-known real repo)
+    uv run python demo/seed_demo.py               # reset + v1 fixture only
+    uv run python demo/seed_demo.py --with-v2      # reset + v1 + v2 + diff (for testing)
+    uv run python demo/seed_demo.py --httpx         # reset + ingest httpx (well-known real repo)
+    uv run python demo/seed_demo.py --no-reset      # add v1 fixture WITHOUT resetting (use after --httpx)
     uv run python demo/seed_demo.py --reset-only    # wipe all data, apply schema
 """
 
@@ -172,9 +173,12 @@ async def ingest_httpx() -> str:
 async def main(args) -> None:
     print("=== Demo seed ===\n")
 
-    # Always reset
-    print("Step 1: Resetting database...")
-    await reset_database()
+    # Reset unless --no-reset
+    if not args.no_reset:
+        print("Step 1: Resetting database...")
+        await reset_database()
+    else:
+        print("Step 1: Skipping reset (--no-reset)")
 
     if args.reset_only:
         print("\nDone (reset only).")
@@ -243,6 +247,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed demo data for DeadReckoning")
     parser.add_argument("--with-v2", action="store_true", help="Also ingest v2 and compute diff")
     parser.add_argument("--httpx", action="store_true", help="Ingest encode/httpx (well-known real repo)")
+    parser.add_argument("--no-reset", action="store_true", help="Skip DB reset (add data on top of existing)")
     parser.add_argument("--reset-only", action="store_true", help="Only wipe data and apply schema")
     args = parser.parse_args()
     asyncio.run(main(args))
