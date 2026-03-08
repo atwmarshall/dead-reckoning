@@ -2,7 +2,7 @@
 
 > Navigate any codebase. Dead reckoning — finding your way through unknown territory.
 
-`dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with four specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
+`dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with six specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
 
 Built at the LangChain x SurrealDB London Hackathon, March 2026.
 
@@ -13,7 +13,7 @@ Built at the LangChain x SurrealDB London Hackathon, March 2026.
 1. **Ingest** — point it at a Python repo (local path or GitHub URL), it walks every `.py` file and builds a knowledge graph in SurrealDB
 2. **Persist** — ingestion checkpoints after every file using `langgraph-checkpoint-surrealdb`; crash-safe and resumable
 3. **Version** — ingest a second version and the graph diffs itself: green/yellow/red at file AND function granularity
-4. **Query** — a LangGraph agent with four graph-traversal tools answers questions about the codebase
+4. **Query** — a LangGraph agent with six tools answers questions about the codebase
 5. **Visualise** — Streamlit UI shows the live graph (with diff colours) and a chat interface
 
 ### The three pillars
@@ -37,7 +37,7 @@ The 46 nodes already built are still in the graph.
 
 ## Agent tools
 
-The query agent has four tools, each showcasing different SurrealDB capabilities:
+The query agent has six tools, each showcasing different SurrealDB capabilities:
 
 | Tool | What it does | SurrealDB feature |
 |---|---|---|
@@ -45,8 +45,10 @@ The query agent has four tools, each showcasing different SurrealDB capabilities
 | **trace_impact** | Map blast radius of a change | Multi-hop graph traversal (`<-calls<-function<-calls<-function`) — 2 hops in one SurrealQL query |
 | **version_diff** | Show what changed between versions | Reads `diff_status` from versioned graph, auto-detects latest versions from `ingestion` table |
 | **list_versions** | Show ingestion history | Queries `ingestion` table — what repos are indexed, how many versions, file counts, timestamps |
+| **generate_docstring** | Generate a docstring for undocumented functions | Reads function source from the knowledge graph, sends to LLM |
+| **raise_issue** | File a GitHub issue with a suggestion | Completes the agentic loop: discover → fix → act |
 
-The agent chains tools together: `version_diff` finds what changed, then `trace_impact` assesses the blast radius. This two-step reasoning chain is fully visible in LangSmith.
+The agent chains tools together: `version_diff` finds what changed and flags undocumented functions, `generate_docstring` creates a suggestion, and `raise_issue` files it as a GitHub issue. This three-step reasoning chain is fully visible in LangSmith.
 
 ---
 
@@ -141,11 +143,12 @@ dead-reckoning/
 │   ├── seed.py            # CLI: walk a repo and load into SurrealDB
 │   ├── diff.py            # Version diffing: snapshot comparison + diff_status
 │   ├── snapshot.py        # Tar-based content-addressed snapshots
+│   ├── enricher.py        # Post-ingestion LLM docstring suggestions
 │   ├── github.py          # GitHub URL detection + shallow clone
 │   └── apply_schema.py    # Apply schema.surql programmatically
 ├── agent/
 │   ├── state.py           # AgentState TypedDict
-│   ├── tools.py           # hybrid_search, trace_impact, version_diff, list_versions
+│   ├── tools.py           # hybrid_search, trace_impact, version_diff, list_versions, generate_docstring, raise_issue
 │   ├── graph.py           # LangGraph query agent + SurrealDB checkpointer
 │   └── ingest_graph.py    # LangGraph ingestion agent (resumable)
 ├── ui/
@@ -159,7 +162,6 @@ dead-reckoning/
 ├── .env.example
 ├── pyproject.toml
 ├── ARCHITECTURE.md        # Schema, integration points, design decisions
-├── DEVELOPMENT.md         # Ordered build tasks with success criteria
 └── README.md
 ```
 
@@ -170,7 +172,6 @@ dead-reckoning/
 | Doc | Purpose |
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Schema design, integration points, test criteria |
-| [DEVELOPMENT.md](./DEVELOPMENT.md) | Ordered build tasks — start here if contributing |
 | [demo/DEMO_SCRIPT.md](./demo/DEMO_SCRIPT.md) | Live demo script: exactly what to type and say |
 
 ---

@@ -37,12 +37,27 @@ SurrealDB serves two distinct roles in this system: **knowledge graph store** an
 
 ```mermaid
 erDiagram
+    repo {
+        string id PK "repo:md5hash"
+        string path
+        string name
+        string ingestion_id
+    }
+    folder {
+        string id PK "folder:md5hash"
+        string path
+        string ingestion_id
+        string content_hash "optional"
+    }
     file {
         string id PK "file:md5hash"
         string path "relative path e.g. auth/login.py"
         string language "python"
         int line_count
-        array embedding "optional, future use"
+        array embedding "optional"
+        string ingestion_id
+        string content_hash "optional"
+        string diff_status "optional: green/yellow/red/added"
     }
     function {
         string id PK "function:md5hash"
@@ -54,6 +69,11 @@ erDiagram
         bool is_method
         string class_name "optional"
         bool has_docstring
+        string ingestion_id
+        string content_hash "optional"
+        string diff_status "optional: green/yellow/red/added"
+        string source "optional, full function text"
+        string suggested_docstring "optional, LLM-generated"
     }
     class {
         string id PK "class:md5hash"
@@ -61,6 +81,7 @@ erDiagram
         record file FK
         int lineno
         array bases "base class name strings"
+        string ingestion_id
     }
     checkpoint {
         string id PK
@@ -77,6 +98,8 @@ erDiagram
         object writes
     }
 
+    repo ||--o{ file : "in_repo (edge)"
+    folder ||--o{ file : "in_folder (edge)"
     file ||--o{ function : "contains (edge)"
     file ||--o{ class : "contains (edge)"
     file ||--o{ file : "imports (edge)"
@@ -112,36 +135,61 @@ The `ingestion` table is central to version awareness — it records every inges
 ### Node Tables
 
 ```sql
+-- REPO: represents the root of an indexed repository
+DEFINE TABLE repo SCHEMAFULL;
+  DEFINE FIELD path         ON repo TYPE string;
+  DEFINE FIELD name         ON repo TYPE string;
+  DEFINE FIELD ingestion_id ON repo TYPE string;
+
+DEFINE INDEX repo_path_iid_idx ON repo FIELDS path, ingestion_id UNIQUE;
+
+-- FOLDER: represents a directory containing .py files
+DEFINE TABLE folder SCHEMAFULL;
+  DEFINE FIELD path         ON folder TYPE string;
+  DEFINE FIELD ingestion_id ON folder TYPE string;
+  DEFINE FIELD content_hash ON folder TYPE option<string>;
+
+DEFINE INDEX folder_path_iid_idx ON folder FIELDS path, ingestion_id UNIQUE;
+
 -- FILE: a .py source file
 DEFINE TABLE file SCHEMAFULL;
-  DEFINE FIELD path       ON file TYPE string;
-  DEFINE FIELD language   ON file TYPE string DEFAULT 'python';
-  DEFINE FIELD line_count ON file TYPE int;
-  DEFINE FIELD embedding  ON file TYPE option<array>;
+  DEFINE FIELD path         ON file TYPE string;
+  DEFINE FIELD language     ON file TYPE string DEFAULT 'python';
+  DEFINE FIELD line_count   ON file TYPE int;
+  DEFINE FIELD embedding    ON file TYPE option<array>;
+  DEFINE FIELD ingestion_id ON file TYPE string;
+  DEFINE FIELD content_hash ON file TYPE option<string>;
+  DEFINE FIELD diff_status  ON file TYPE option<string>;
 
-DEFINE INDEX file_path_idx ON file FIELDS path UNIQUE;
+DEFINE INDEX file_path_iid_idx ON file FIELDS path, ingestion_id UNIQUE;
 
 -- FUNCTION: a named function or method
 DEFINE TABLE function SCHEMAFULL;
-  DEFINE FIELD name          ON function TYPE string;
-  DEFINE FIELD file          ON function TYPE record<file>;
-  DEFINE FIELD lineno        ON function TYPE int;
-  DEFINE FIELD docstring     ON function TYPE option<string>;
-  DEFINE FIELD embedding     ON function TYPE option<array>;  -- 768-dim vector
-  DEFINE FIELD is_method     ON function TYPE bool DEFAULT false;
-  DEFINE FIELD class_name    ON function TYPE option<string>;
-  DEFINE FIELD has_docstring ON function TYPE bool DEFAULT false;
+  DEFINE FIELD name                ON function TYPE string;
+  DEFINE FIELD file                ON function TYPE record<file>;
+  DEFINE FIELD lineno              ON function TYPE int;
+  DEFINE FIELD docstring           ON function TYPE option<string>;
+  DEFINE FIELD has_docstring       ON function TYPE bool DEFAULT false;
+  DEFINE FIELD class_name          ON function TYPE option<string>;
+  DEFINE FIELD is_method           ON function TYPE bool DEFAULT false;
+  DEFINE FIELD embedding           ON function TYPE option<array>;  -- 768-dim vector
+  DEFINE FIELD ingestion_id        ON function TYPE string;
+  DEFINE FIELD content_hash        ON function TYPE option<string>;
+  DEFINE FIELD diff_status         ON function TYPE option<string>;
+  DEFINE FIELD source              ON function TYPE option<string>;
+  DEFINE FIELD suggested_docstring ON function TYPE option<string>;
 
-DEFINE INDEX fn_name_file_idx ON function FIELDS name, file UNIQUE;
+DEFINE INDEX fn_name_file_class_iid_idx ON function FIELDS name, file, class_name, ingestion_id UNIQUE;
 
 -- CLASS: a class definition
 DEFINE TABLE class SCHEMAFULL;
-  DEFINE FIELD name   ON class TYPE string;
-  DEFINE FIELD file   ON class TYPE record<file>;
-  DEFINE FIELD lineno ON class TYPE int;
-  DEFINE FIELD bases  ON class TYPE array DEFAULT [];
+  DEFINE FIELD name          ON class TYPE string;
+  DEFINE FIELD file          ON class TYPE record<file>;
+  DEFINE FIELD lineno        ON class TYPE int;
+  DEFINE FIELD bases         ON class TYPE array DEFAULT [];
+  DEFINE FIELD ingestion_id  ON class TYPE string;
 
-DEFINE INDEX class_name_file_idx ON class FIELDS name, file UNIQUE;
+DEFINE INDEX class_name_file_iid_idx ON class FIELDS name, file, ingestion_id UNIQUE;
 ```
 
 ### Edge Tables (Graph Relationships)
@@ -151,6 +199,8 @@ DEFINE TABLE imports   SCHEMALESS;  -- file -> file
 DEFINE TABLE contains  SCHEMALESS;  -- file -> function | class
 DEFINE TABLE calls     SCHEMALESS;  -- function -> function
 DEFINE TABLE inherits  SCHEMALESS;  -- class -> class
+DEFINE TABLE in_folder SCHEMALESS;  -- file -> folder
+DEFINE TABLE in_repo   SCHEMALESS;  -- file -> repo
 ```
 
 ### Checkpoint Tables (Agent State Persistence)
@@ -163,10 +213,10 @@ DEFINE TABLE IF NOT EXISTS `write`    SCHEMALESS;  -- per-task write deltas
 ### Deterministic Record IDs (Idempotent Ingestion)
 
 ```python
-# Hash-based IDs mean re-ingestion updates records rather than duplicating
-file_id     = f"file:`{md5(path)[:12]}`"
-function_id = f"function:`{md5(path + '::' + name)[:12]}`"
-class_id    = f"class:`{md5(path + '::' + name)[:12]}`"
+# Hash-based IDs include ingestion_id — each version gets its own nodes
+file_id     = f"file:`{md5(path + ingestion_id)[:12]}`"
+function_id = f"function:`{md5(path + '::' + class_name + '::' + name + '::' + ingestion_id)[:12]}`"
+class_id    = f"class:`{md5(path + '::' + name + '::' + ingestion_id)[:12]}`"
 ```
 
 ### Key SurrealQL Query Patterns
@@ -201,11 +251,14 @@ SELECT name, file.path AS path,
 FROM `function` WHERE name CONTAINS $symbol;
 
 -- Hybrid search with native RRF (hybrid_search tool)
-LET $vs = SELECT *, vector::similarity::cosine(embedding, $vec) AS score
+LET $vs = SELECT *, file.path AS path,
+                    vector::similarity::cosine(embedding, $vec) AS score
           FROM `function` WHERE embedding <|5,100|> $vec;
-LET $ft = SELECT *, search::score(0) + search::score(1) AS score
+LET $ft = SELECT *, file.path AS path,
+                    search::score(0) + search::score(1) + search::score(2) AS score
           FROM `function`
           WHERE name @0@ $keyword OR docstring @1@ $keyword
+                OR suggested_docstring @2@ $keyword
           ORDER BY score DESC LIMIT 10;
 RETURN search::rrf([$vs, $ft], 5, 60);
 
@@ -265,7 +318,7 @@ stateDiagram-v2
         [*] --> bind_tools
         bind_tools --> invoke_ollama
         invoke_ollama --> [*]
-        note right of bind_tools: hybrid_search, trace_impact,\nversion_diff, list_versions\nbound via bind_tools()
+        note right of bind_tools: hybrid_search, trace_impact,\nversion_diff, list_versions,\ngenerate_docstring, raise_issue\nbound via bind_tools()
     }
 
     state tools_node {
@@ -274,6 +327,8 @@ stateDiagram-v2
         ToolNode --> trace_impact: multi-hop graph traversal
         ToolNode --> version_diff: diff status from versioned graph
         ToolNode --> list_versions: ingestion history query
+        ToolNode --> generate_docstring: source from graph + LLM
+        ToolNode --> raise_issue: GitHub issue via CLI
     }
 ```
 
@@ -287,7 +342,8 @@ stateDiagram-v2
     review_diff --> create_call_edges: no files remaining
     process_file --> process_file: more files remaining
     process_file --> create_call_edges: all files processed
-    create_call_edges --> finalize
+    create_call_edges --> enrich_summaries
+    enrich_summaries --> finalize
     finalize --> [*]
 
     state initialize {
@@ -331,19 +387,21 @@ class IngestionState(TypedDict):
 
 ### Agent Tools
 
-Four tools are exposed to the query agent:
+Six tools are exposed to the query agent:
 
 1. **hybrid_search** — Combines HNSW vector similarity and BM25 full-text matching via SurrealDB's native `search::rrf()` in a single SurrealQL query. Results are enriched with parent class and sibling functions via graph traversal.
 2. **trace_impact** — Multi-hop graph traversal (`<-calls<-function<-calls<-function`) finding direct and transitive callers of any function. Two hops through the calls graph in one query.
-3. **version_diff** — Auto-detects versions from the `ingestion` table, then reads `diff_status` (green/yellow/red) from the versioned knowledge graph at both file and function granularity. Requires no arguments.
+3. **version_diff** — Auto-detects versions from the `ingestion` table, then reads `diff_status` (green/yellow/red) from the versioned knowledge graph at both file and function granularity. Flags undocumented functions.
 4. **list_versions** — Queries the `ingestion` table to show all indexed repositories, their versions, file counts, timestamps, and snapshot status. Lightweight — useful for "what's been ingested?" without triggering a full diff.
+5. **generate_docstring** — Reads a function's source code from the knowledge graph and sends it to the LLM to generate a Python docstring. Chains naturally after `version_diff` flags undocumented functions.
+6. **raise_issue** — Creates a GitHub issue via the `gh` CLI with a code improvement suggestion. Chains after `generate_docstring` to complete the agentic code review loop: discover → fix → act.
 
 ```mermaid
 flowchart TD
     Q[User query string] --> EX[stopword filter\nextract keyword terms]
     Q --> EMB[OllamaEmbeddings\nnomic-embed-text 768-dim]
 
-    EX -->|keyword| FT[SurrealQL: BM25 full-text\nname @0@ keyword OR docstring @1@ keyword]
+    EX -->|keyword| FT[SurrealQL: BM25 full-text\nname @0@ keyword OR docstring @1@ keyword\nOR suggested_docstring @2@ keyword]
     EMB -->|embedding vector| VS[SurrealQL: HNSW vector\nembedding less|5,100| greater $vec]
 
     FT -->|ranked list| RRF[search::rrf\nNative SurrealDB fusion\nk=5, window=60]
@@ -367,11 +425,13 @@ Every retrieval sub-step is decorated with `@traceable`, producing a nested trac
 LangGraph run
 └── llm_node
 └── tools_node
-    ├── hybrid_search    [retriever] native RRF (vector + BM25)
+    ├── hybrid_search      [retriever] native RRF (vector + BM25)
     │   └── graph_enrich x N  [retriever] parent_class, siblings
-    ├── trace_impact     [retriever] multi-hop calls graph traversal
-    ├── version_diff     [retriever] diff_status from versioned graph + ingestion auto-detect
-    └── list_versions    [retriever] ingestion history from SurrealDB
+    ├── trace_impact       [retriever] multi-hop calls graph traversal
+    ├── version_diff       [retriever] diff_status from versioned graph + ingestion auto-detect
+    ├── list_versions      [retriever] ingestion history from SurrealDB
+    ├── generate_docstring [chain]     source from graph → LLM → docstring
+    └── raise_issue        [tool]      gh issue create via CLI
 ```
 
 ### Checkpointing: How Resumable Flows Work
@@ -410,10 +470,13 @@ query_config  = {"configurable": {"thread_id": f"query-{repo_name}"}}
 ```python
 # Model selected at runtime via env var — no code changes to switch
 llm = ChatOllama(
-    model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),  # swap for gemma3:27b at demo
+    model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),  # swap for gpt-oss:20b at demo
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
 )
-llm_with_tools = llm.bind_tools([hybrid_search, trace_impact, version_diff, list_versions])
+llm_with_tools = llm.bind_tools([
+    hybrid_search, trace_impact, version_diff,
+    list_versions, generate_docstring, raise_issue
+])
 
 # Embeddings — 768-dim vectors stored in SurrealDB function.embedding
 embedder = OllamaEmbeddings(model="nomic-embed-text")
