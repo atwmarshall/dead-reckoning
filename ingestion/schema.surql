@@ -75,3 +75,11 @@ DEFINE TABLE IF NOT EXISTS calls     SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS inherits  SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS in_folder SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS in_repo   SCHEMALESS;
+
+DEFINE ANALYZER IF NOT EXISTS fn_analyzer TOKENIZERS class, punct FILTERS lowercase, ascii;
+REMOVE INDEX IF EXISTS fn_name_ft ON TABLE `function`;
+DEFINE INDEX fn_name_ft ON `function` FIELDS name FULLTEXT ANALYZER fn_analyzer BM25;
+REMOVE INDEX IF EXISTS fn_docstring_ft ON TABLE `function`;
+DEFINE INDEX fn_docstring_ft ON `function` FIELDS docstring FULLTEXT ANALYZER fn_analyzer BM25;
+REMOVE INDEX IF EXISTS fn_embedding_hnsw ON TABLE `function`;
+DEFINE INDEX fn_embedding_hnsw ON `function` FIELDS embedding HNSW DIMENSION 768 DIST COSINE;

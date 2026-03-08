@@ -84,7 +84,7 @@ Say:
 
 ---
 
-**[1:05 — QUERY across the diff]**
+**[1:05 — QUERY — three tools, two chained together]**
 
 *Switch to "Ask the Codebase" tab. Type:*
 ```
@@ -92,18 +92,26 @@ what changed between versions and what might be affected?
 ```
 
 Say (while agent responds):
-> "The agent reasons across the diff — it knows which nodes are yellow and traverses their dependencies to surface impact."
+> "Watch the agent reason. It has three tools. First it calls **version_diff** — that reads the diff_status field from every file and function node in SurrealDB. Red, yellow, green. Then it chains into **trace_impact** on the modified files — that's a multi-hop graph traversal: 'what calls this function, and what calls *that*?' Two hops through the calls graph in a single SurrealQL query. Not possible in a vector database."
+
+*Point at tool calls appearing in the response*
+
+Say:
+> "And the search itself — **hybrid_search** — uses `search::rrf()`. One SurrealQL statement fusing BM25 keyword matching with HNSW vector similarity. Reciprocal Rank Fusion computed entirely inside SurrealDB. No application-side stitching."
 
 ---
 
-**[1:25 — LANGSMITH — show the reasoning]**
+**[1:25 — LANGSMITH — show the reasoning chain]**
 
 *Switch to LangSmith — trace for the query visible*
 
 Say:
-> "Every operation observable — parse, load, embed, snapshot. Both the ingestion agent and the query agent are fully traced. It called get_dependencies on the modified files to find downstream impact. Tool calls, graph traversal, fully auditable."
+> "Every operation observable. The agent called version_diff, saw the yellow files, then called trace_impact to find downstream callers. A two-tool reasoning chain — visible right here in the trace."
 
-*Point at the tool call chain — show ingestion trace tree alongside query trace*
+*Point at the tool call chain — show version_diff → trace_impact sequence*
+
+Say:
+> "Both the ingestion agent and the query agent are fully traced. Tool calls, graph traversals, fully auditable."
 
 ---
 
@@ -112,7 +120,7 @@ Say:
 *Switch back to graph — coloured nodes*
 
 Say:
-> "A knowledge graph that survives crashes, versions itself like a container layer, and lets you query across the diff. All in SurrealDB — the graph, the checkpoints, the version history. Same database. Three jobs."
+> "A knowledge graph that survives crashes, versions itself like a container layer, and lets you query across the diff. Three tools — semantic search with native RRF, multi-hop impact analysis, and version awareness. All in SurrealDB — the graph, the checkpoints, the version history. Same database. Three jobs."
 
 ---
 
@@ -120,10 +128,48 @@ Say:
 
 ---
 
+## What makes each tool special (for judge Q&A)
+
+### hybrid_search
+- **What it does:** Finds functions by concept or name using combined semantic + keyword search
+- **SurrealDB feature:** `search::rrf()` fuses HNSW vector similarity and BM25 full-text matching in a single SurrealQL query — no application-side rank merging
+- **Graph enrichment:** Results are enriched with parent class and sibling functions via graph traversal
+- **Prompt to trigger:** `"which functions handle authentication?"` or `"find the HTTP client logic"`
+
+### trace_impact
+- **What it does:** Maps the blast radius of a change — finds everything that directly or transitively depends on a function
+- **SurrealDB feature:** Multi-hop graph traversal (`<-calls<-function<-calls<-function`) in a single query — 2 hops through the calls graph, returning direct callers AND their callers
+- **Why it matters:** This is structural analysis that context windows can't do. "What calls X, and what calls that?" requires the graph
+- **Prompt to trigger:** `"what would break if I changed send_request?"` or `"what depends on utils?"`
+
+### version_diff
+- **What it does:** Summarises what changed between two ingested versions at file AND function granularity
+- **SurrealDB feature:** Reads `diff_status` from the versioned knowledge graph, traverses `->contains->function` edges to show per-function changes within each file
+- **Why it matters:** The graph is version-aware — not just "what exists" but "what changed" — and the agent can reason over the diff
+- **Prompt to trigger:** `"what changed between versions?"` or `"show me the diff summary"`
+
+### Multi-tool chain (the demo moment)
+- The prompt `"what changed between versions and what might be affected?"` triggers **version_diff** first, then the agent chains into **trace_impact** on the modified items
+- This shows agent reasoning: understand the diff, then assess the blast radius
+- Visible as a two-step tool call sequence in LangSmith
+
+---
+
+## Pre-typed queries — scratch file, copy-paste during demo
+
+```
+what changed between versions and what might be affected?
+what would break if I changed send_request?
+which functions handle the core HTTP request logic?
+show me the diff summary for _auth
+```
+
+---
+
 ## Anticipated judge questions
 
 **"How is this different from just using an LLM with the code as context?"**
-> "Context windows can't do multi-hop graph traversal. 'What imports auth.py, and what does that import?' is structural — you need the graph. LLMs also forget between sessions. Our agent accumulates knowledge across runs and versions."
+> "Context windows can't do multi-hop graph traversal. 'What calls this function, and what calls that?' is structural — you need the graph. And our search uses SurrealDB's native `search::rrf()` to fuse vector and keyword results inside the database, not in Python. LLMs also forget between sessions. Our agent accumulates knowledge across runs and versions."
 
 **"Why OCI tar format?"**
 > "Same content-addressing as Docker — SHA-256 per file, whiteout entries for deletions. Pure Python stdlib, zero extra dependencies. The snapshots are format-compatible: you can docker import them. We understood the spec well enough to implement it ourselves."
@@ -135,24 +181,16 @@ Say:
 > "We diff the two tar snapshots — old SHA-256 vs new. Same hash goes green, changed goes yellow, absent goes red. SurrealDB nodes get a diff_status field updated in place. No re-ingestion needed for the diff — it's pure snapshot comparison."
 
 **"Why SurrealDB specifically?"**
-> "One instance doing three things: knowledge graph with typed edges, LangGraph checkpoint state, and version history with snapshot paths. Graph traversal AND vector search in a single SurrealQL query. No second database anywhere."
+> "One instance doing three things: knowledge graph with typed edges, LangGraph checkpoint state, and version history with snapshot paths. Graph traversal AND vector search AND full-text BM25 in a single SurrealQL query via `search::rrf()`. No second database anywhere."
 
 **"What's the LangGraph checkpointer doing?"**
 > "After every node, LangGraph serialises the full agent state and writes it to SurrealDB via langgraph-checkpoint-surrealdb. Same thread ID on resume = rehydrate that state and continue the loop from where it stopped."
 
+**"What's search::rrf()?"**
+> "Reciprocal Rank Fusion. We run two searches — HNSW vector similarity for semantic meaning and BM25 for keyword matching — then SurrealDB's built-in `search::rrf()` function merges both ranked lists into one. The fusion happens inside the database in a single query, not in our Python code."
+
 **"Does it work on non-Python repos?"**
 > "Python only for the AST parsing — we used the built-in ast module. tree-sitter adds multi-language support; that's the obvious next step. The snapshot and diff layer works on any file type already."
-
----
-
-## Pre-typed queries — scratch file, copy-paste during demo
-
-```
-what changed between versions and what might be affected?
-what does _auth.py depend on?
-which functions handle the core HTTP request logic?
-what would break if I removed utils.py?
-```
 
 ---
 
@@ -181,7 +219,7 @@ from agent.graph import build_query_agent
 agent = build_query_agent()
 config = {'configurable': {'thread_id': 'demo-fallback'}}
 r = agent.invoke({
-    'messages': [('user', 'what does _auth.py depend on?')],
+    'messages': [('user', 'what changed between versions and what might be affected?')],
     'repo_path': 'tests/fixtures/sample_repo/v1'
 }, config)
 print(r['messages'][-1].content)

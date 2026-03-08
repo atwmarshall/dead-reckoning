@@ -22,11 +22,37 @@ async def _query(sql: str, vars: dict | None = None):
         await db.close()
 
 
+async def _query_raw(sql: str, vars: dict | None = None):
+    """Use query_raw for multi-statement queries (LET/RETURN) where query() returns None."""
+    db = AsyncSurreal(os.environ["SURREALDB_URL"])
+    await db.connect()
+    await db.signin({"username": os.environ["SURREALDB_USER"], "password": os.environ["SURREALDB_PASS"]})
+    await db.use(os.environ["SURREALDB_NS"], os.environ["SURREALDB_DB"])
+    try:
+        resp = await db.query_raw(sql, vars or {})
+        # query_raw returns {"id": ..., "result": [{"result": ..., "status": "OK"}, ...]}
+        if isinstance(resp, dict):
+            stmts = resp.get("result") or []
+            if isinstance(stmts, list) and stmts:
+                last = stmts[-1]
+                if isinstance(last, dict):
+                    return last.get("result") or []
+        return []
+    finally:
+        await db.close()
+
+
 _STOP_WORDS = {
     "what", "does", "do", "the", "a", "an", "function", "method", "class",
     "tell", "me", "about", "how", "is", "are", "in", "for", "to", "of",
     "and", "or", "it", "can", "you", "give", "show", "explain", "get",
+    "changed", "between", "versions", "new", "deleted", "modified",
 }
+
+_embedder = OllamaEmbeddings(
+    model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
+    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+)
 
 
 def _clean(obj):
@@ -37,251 +63,267 @@ def _clean(obj):
         return {
             k: _clean(v)
             for k, v in obj.items()
-            if k not in ("self", "embedding", "score", "id")
+            if k not in ("self", "embedding", "score", "id", "rrf_score")
         }
     return obj
 
 
-class DeadReckoningRetriever:
-    """Hybrid retriever combining vector similarity and keyword graph search
-    via Reciprocal Rank Fusion (RRF)."""
+def _get_rows(result) -> list:
+    """Extract rows from a SurrealDB query response."""
+    if isinstance(result, list):
+        if result and isinstance(result[0], dict) and "result" in result[0]:
+            return result[0].get("result") or []
+        return result
+    return []
 
-    def __init__(self, k: int = 60, limit: int = 5, semantic_threshold: float = 0.55):
-        self.k = k
-        self.limit = limit
-        self.semantic_threshold = semantic_threshold
-        self._embedder = OllamaEmbeddings(
-            model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        )
 
-    @staticmethod
-    def _camel_split(token: str) -> list[str]:
-        """Split CamelCase into parts: DigestAuth → ['Digest', 'Auth']."""
-        parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)", token)
-        return parts if parts else [token]
+# ---------------------------------------------------------------------------
+# Graph enrichment (parent class + sibling functions)
+# ---------------------------------------------------------------------------
 
-    def _extract_terms(self, query: str) -> list[str]:
-        raw = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", query)
-        expanded = []
-        for t in raw:
-            expanded.extend(self._camel_split(t))
-        terms = [t.lower() for t in expanded if len(t) > 2]
-        return [t for t in terms if t not in _STOP_WORDS]
-
-    @traceable(
-        name="semantic_search",
-        run_type="retriever",
-        process_inputs=lambda x: {"vec_dims": len(x.get("vec", [])), "threshold": x.get("threshold", 0.65)},
-        process_outputs=_clean,
-    )
-    async def _semantic(self, vec: list[float], threshold: float = 0.65) -> list[dict]:
-        rows = await _query(
-            """SELECT id, name, lineno, class_name, docstring, has_docstring, file.path AS path,
-               vector::similarity::cosine(embedding, $vec) AS score
-               FROM `function`
-               WHERE embedding IS NOT NONE
-               AND vector::similarity::cosine(embedding, $vec) >= $threshold
-               ORDER BY score DESC
-               LIMIT 10""",
-            {"vec": vec, "threshold": threshold},
-        )
-        return rows or []
-
-    @traceable(
-        name="keyword_search",
-        run_type="retriever",
-        process_inputs=lambda x: {"terms": x.get("terms", [])},
-        process_outputs=_clean,
-    )
-    async def _keyword(self, terms: list[str]) -> list[dict]:
-        if not terms:
-            return []
-        conditions = " OR ".join(
-            f"string::lowercase(name) CONTAINS $t{i}" for i in range(len(terms))
-        )
-        vars = {f"t{i}": term for i, term in enumerate(terms)}
-        rows = await _query(
-            f"""SELECT id, name, lineno, class_name, docstring, has_docstring, file.path AS path
-                FROM `function`
-                WHERE {conditions}
-                LIMIT 25""",
-            vars,
-        )
-        return rows or []
-
-    @traceable(
-        name="rrf_merge",
-        run_type="chain",
-        process_inputs=lambda x: {
-            "exact_terms": list(x.get("exact_terms") or []),
-            "list_counts": [len(lst) for lst in x.get("ranked_lists", [])],
-        },
-        process_outputs=_clean,
-    )
-    def _rrf_merge(self, *ranked_lists: list[dict], exact_terms: set[str] | None = None) -> list[dict]:
-        scores: dict[str, float] = {}
-        docs: dict[str, dict] = {}
-        for ranked in ranked_lists:
-            for rank, doc in enumerate(ranked):
-                key = str(doc.get("id") or f"{doc.get('name')}::{doc.get('path')}")
-                scores[key] = scores.get(key, 0.0) + 1.0 / (self.k + rank + 1)
-                if exact_terms and doc.get("name", "").lower() in exact_terms:
-                    scores[key] += 1.0 / self.k
-                docs[key] = doc
-        return [docs[k] for k in sorted(docs, key=lambda k: scores[k], reverse=True)]
-
-    @traceable(
-        name="graph_enrich",
-        run_type="retriever",
-        process_inputs=lambda x: {
-            "function": x.get("doc", {}).get("name"),
-            "path": x.get("doc", {}).get("path"),
-            "lineno": x.get("doc", {}).get("lineno"),
-        },
-        process_outputs=lambda x: {
-            "function": x.get("name"),
-            "parent_class": x.get("_parent_class", {}).get("name"),
-            "siblings": x.get("_siblings", []),
-        },
-    )
-    async def _enrich(self, doc: dict) -> dict:
-        """Add graph context: inferred parent class and sibling function names."""
-        path = doc.get("path")
-        lineno = doc.get("lineno")
-        name = doc.get("name")
-        if not path:
-            return doc
-
-        parent_class, siblings = await asyncio.gather(
-            _query(
-                """SELECT name, bases, lineno FROM `class`
-                   WHERE file.path = $path AND lineno < $lineno
-                   ORDER BY lineno DESC LIMIT 1""",
-                {"path": path, "lineno": lineno or 0},
-            ),
-            _query(
-                """SELECT name FROM `function`
-                   WHERE file.path = $path AND class_name = $class_name AND name != $name
-                   LIMIT 20""",
-                {"path": path, "class_name": doc.get("class_name"), "name": name},
-            ),
-        )
-
-        doc["_parent_class"] = (parent_class or [{}])[0] or {}
-        doc["_siblings"] = [r.get("name") for r in (siblings or []) if r.get("name")]
+async def _enrich_one(doc: dict) -> dict:
+    """Add graph context: inferred parent class and sibling function names."""
+    path = doc.get("path")
+    if not path and isinstance(doc.get("file"), dict):
+        path = doc["file"].get("path")
+    lineno = doc.get("lineno")
+    name = doc.get("name")
+    if not path:
         return doc
 
-    @staticmethod
-    def _format(doc: dict) -> str:
-        name = doc.get("name", "?")
-        path = doc.get("path") or "?"
-        docstring = (doc.get("docstring") or "").strip()
-        documented = doc.get("has_docstring", bool(docstring))
+    parent_class, siblings = await asyncio.gather(
+        _query(
+            """SELECT name, bases, lineno FROM `class`
+               WHERE file.path = $path AND lineno < $lineno
+               ORDER BY lineno DESC LIMIT 1""",
+            {"path": path, "lineno": lineno or 0},
+        ),
+        _query(
+            """SELECT name FROM `function`
+               WHERE file.path = $path AND class_name = $class_name AND name != $name
+               LIMIT 20""",
+            {"path": path, "class_name": doc.get("class_name"), "name": name},
+        ),
+    )
 
-        parent = doc.get("_parent_class") or {}
-        siblings = doc.get("_siblings") or []
+    pc_rows = _get_rows(parent_class)
+    doc["_parent_class"] = pc_rows[0] if pc_rows else {}
+    doc["_siblings"] = [r.get("name") for r in _get_rows(siblings) if r.get("name")]
+    doc["path"] = path
+    return doc
 
-        lines = [
-            f"function: {name}",
-            f"file:     {path}",
-            f"status:   {'documented' if documented else 'undocumented'}",
-        ]
-        if parent.get("name"):
-            bases = ", ".join(parent.get("bases") or [])
-            cls_str = parent["name"] + (f"({bases})" if bases else "")
-            lines.append(f"class:    {cls_str}")
-        if siblings:
-            lines.append(f"siblings: {', '.join(siblings)}")
-        if docstring:
-            lines.append(f"summary:  {docstring}")
 
-        return "\n".join(lines)
+async def _enrich_all(docs: list[dict]) -> list[dict]:
+    return await asyncio.gather(*[_enrich_one(doc) for doc in docs])
 
-    async def retrieve(self, query: str) -> list[str]:
-        terms = self._extract_terms(query)
-        vec = self._embedder.embed_query(query)
-        semantic_results, keyword_results = await asyncio.gather(
-            self._semantic(vec, threshold=self.semantic_threshold),
-            self._keyword(terms),
+
+def _format(doc: dict) -> str:
+    name = doc.get("name", "?")
+    path = doc.get("path") or "?"
+    docstring = (doc.get("docstring") or "").strip()
+    documented = doc.get("has_docstring", bool(docstring))
+
+    parent = doc.get("_parent_class") or {}
+    siblings = doc.get("_siblings") or []
+
+    lines = [
+        f"function: {name}",
+        f"file:     {path}",
+        f"status:   {'documented' if documented else 'undocumented'}",
+    ]
+    if parent.get("name"):
+        bases = ", ".join(parent.get("bases") or [])
+        cls_str = parent["name"] + (f"({bases})" if bases else "")
+        lines.append(f"class:    {cls_str}")
+    if siblings:
+        lines.append(f"siblings: {', '.join(siblings)}")
+    if docstring:
+        lines.append(f"summary:  {docstring}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 1: hybrid_search — SurrealDB native RRF (vector + BM25 fusion)
+# ---------------------------------------------------------------------------
+
+@traceable(name="hybrid_search", run_type="retriever", process_outputs=_clean)
+def _do_hybrid_search(query: str) -> list[str]:
+    vec = _embedder.embed_query(query)
+    terms = [t for t in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]+", query)
+             if t.lower() not in _STOP_WORDS and len(t) > 2]
+    keyword = max(terms, key=len) if terms else query.split()[0]
+
+    rows = asyncio.run(_query_raw(
+        """
+        LET $vs = SELECT *, file.path AS path,
+                         vector::similarity::cosine(embedding, $vec) AS score
+                  FROM `function`
+                  WHERE embedding <|5,100|> $vec;
+        LET $ft = SELECT *, file.path AS path,
+                         search::score(0) + search::score(1) AS score
+                  FROM `function`
+                  WHERE name @0@ $keyword OR docstring @1@ $keyword
+                  ORDER BY score DESC LIMIT 10;
+        RETURN search::rrf([$vs, $ft], 5, 60);
+        """,
+        {"vec": vec, "keyword": keyword},
+    ))
+
+    enriched = asyncio.run(_enrich_all(rows[:5]))
+    results = [_format(doc) for doc in enriched]
+    if len(rows) > 5:
+        results.append(
+            f"note: results truncated at 5. "
+            f"Refine your query or ask about a specific file to explore further."
         )
-        merged = self._rrf_merge(semantic_results, keyword_results, exact_terms=set(terms))
-
-        # If the top results all share the same function name (multiple implementations),
-        # return all of them rather than cutting off. Otherwise apply the normal limit.
-        top_name = merged[0].get("name") if merged else None
-        if top_name and all(d.get("name") == top_name for d in merged[:self.limit]):
-            cutoff = sum(1 for d in merged if d.get("name") == top_name)
-        else:
-            cutoff = self.limit
-
-        enriched = await asyncio.gather(*[self._enrich(doc) for doc in merged[:cutoff]])
-        results = [self._format(doc) for doc in enriched]
-        if cutoff == self.limit and len(merged) > self.limit:
-            results.append(
-                f"note: results truncated at {self.limit}. "
-                f"Refine your query or use explain_module with a filename to explore further."
-            )
-        return results
-
-
-_retriever = DeadReckoningRetriever()
+    return results
 
 
 @tool
 def hybrid_search(query: str) -> list[str]:
-    """Search the codebase combining semantic similarity and keyword name matching.
+    """Search the codebase combining semantic similarity and keyword matching.
     Use for any question about what a function does, finding functions by name,
     or exploring codebase concepts."""
-    return asyncio.run(_retriever.retrieve(query))
+    return _do_hybrid_search(query)
 
 
-@tool
-def get_dependencies(module: str) -> list[str]:
-    """Return the file paths that a given file imports. Pass a partial filename e.g. '_client'."""
-    rows = asyncio.run(_query(
-        "SELECT ->imports->file.path AS deps FROM file WHERE path CONTAINS $module",
-        {"module": module},
-    ))
-    if not rows:
-        return []
-    paths = []
-    for row in rows:
-        for p in (row.get("deps") or []):
-            if p:
-                paths.append(p)
-    return paths
-
+# ---------------------------------------------------------------------------
+# Tool 2: trace_impact — multi-hop graph traversal on calls edges
+# ---------------------------------------------------------------------------
 
 @tool
-def find_callers(function_name: str) -> list[str]:
-    """Return names of functions that call the given function. Returns empty list if call edges not yet indexed."""
+@traceable(name="trace_impact", run_type="retriever", process_outputs=_clean)
+def trace_impact(symbol: str) -> str:
+    """Find everything that calls or depends on a given function or file — direct and transitive.
+    Use when asked what would break, what depends on something, or for impact analysis.
+    Pass a function name or partial filename."""
     rows = asyncio.run(_query(
-        "SELECT <-calls<-`function`.name AS callers FROM `function` WHERE name = $name",
-        {"name": function_name},
+        """
+        SELECT
+            name,
+            file.path AS path,
+            <-calls<-`function`.name AS direct_callers,
+            <-calls<-`function`.file.path AS caller_files,
+            <-calls<-`function`<-calls<-`function`.name AS transitive_callers
+        FROM `function`
+        WHERE name CONTAINS $symbol OR file.path CONTAINS $symbol
+        """,
+        {"symbol": symbol},
     ))
+    rows = _get_rows(rows)
     if not rows:
-        return []
-    names = []
-    for row in rows:
-        for n in (row.get("callers") or []):
-            if n:
-                names.append(n)
-    return names
+        return f"No functions found matching '{symbol}'."
 
-
-@tool
-def explain_module(module: str) -> str:
-    """Return a summary of all functions and their docstrings in a given file. Pass a partial filename e.g. '_auth'."""
-    rows = asyncio.run(_query(
-        "SELECT name, docstring FROM `function` WHERE file.path CONTAINS $module",
-        {"module": module},
-    ))
-    if not rows:
-        return f"No functions found for module matching '{module}'."
     lines = []
     for row in rows:
         name = row.get("name", "?")
-        doc = row.get("docstring") or "(no docstring)"
-        lines.append(f"  {name}: {doc}")
-    return f"Functions in '{module}':\n" + "\n".join(lines)
+        path = row.get("path", "?")
+
+        direct = row.get("direct_callers") or []
+        if not isinstance(direct, list):
+            direct = [direct]
+        direct = [c for c in direct if c]
+
+        caller_files = row.get("caller_files") or []
+        if not isinstance(caller_files, list):
+            caller_files = [caller_files]
+        caller_files = list(dict.fromkeys(f for f in caller_files if f))
+
+        transitive = row.get("transitive_callers") or []
+        if not isinstance(transitive, list):
+            transitive = [transitive]
+        transitive = [t for t in transitive if t and t not in direct]
+
+        lines.append(f"function: {name}")
+        lines.append(f"file:     {path}")
+        if direct:
+            lines.append(f"  direct callers ({len(direct)}):     {', '.join(direct)}")
+        if caller_files:
+            lines.append(f"  caller files ({len(caller_files)}):      {', '.join(caller_files)}")
+        if transitive:
+            lines.append(f"  transitive callers ({len(transitive)}): {', '.join(transitive)}")
+        if not direct and not transitive:
+            lines.append("  (no known callers — leaf function)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 3: version_diff — diff status from versioned knowledge graph
+# ---------------------------------------------------------------------------
+
+@tool
+@traceable(name="version_diff", run_type="retriever", process_outputs=_clean)
+def version_diff(module: str = "") -> str:
+    """Summarise what changed in the most recent version comparison.
+    Pass a filename to filter, or leave empty for the full diff summary.
+    Use when asked what changed, what's new, or what was deleted."""
+    file_condition = "AND path CONTAINS $module" if module else ""
+    file_rows = _get_rows(asyncio.run(_query(
+        f"""
+        SELECT path, diff_status,
+               ->contains->`function`.name AS functions
+        FROM file
+        WHERE diff_status IS NOT NONE {file_condition}
+        ORDER BY diff_status
+        """,
+        {"module": module} if module else {},
+    )))
+
+    fn_condition = "AND file.path CONTAINS $module" if module else ""
+    fn_rows = _get_rows(asyncio.run(_query(
+        f"""
+        SELECT name, diff_status, file.path AS path
+        FROM `function`
+        WHERE diff_status IS NOT NONE {fn_condition}
+        ORDER BY diff_status
+        """,
+        {"module": module} if module else {},
+    )))
+
+    if not file_rows and not fn_rows:
+        return "No version diff data found. Ingest two versions to see what changed."
+
+    files_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": []}
+    for row in file_rows:
+        s = row.get("diff_status", "")
+        if s in files_by_status:
+            files_by_status[s].append(row.get("path", "?"))
+
+    fns_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": []}
+    for row in fn_rows:
+        s = row.get("diff_status", "")
+        if s in fns_by_status:
+            fns_by_status[s].append(f"{row.get('name', '?')} in {row.get('path', '?')}")
+
+    lines = ["Version Diff Summary", "=" * 40]
+
+    if files_by_status["red"]:
+        lines.append(f"\nDELETED files ({len(files_by_status['red'])}):")
+        for p in files_by_status["red"]:
+            lines.append(f"  - {p}")
+    if files_by_status["yellow"]:
+        lines.append(f"\nMODIFIED files ({len(files_by_status['yellow'])}):")
+        for p in files_by_status["yellow"]:
+            lines.append(f"  ~ {p}")
+    if files_by_status["green"]:
+        lines.append(f"\nUNCHANGED files ({len(files_by_status['green'])}):")
+        for p in files_by_status["green"]:
+            lines.append(f"  . {p}")
+
+    if fns_by_status["red"]:
+        lines.append(f"\nDELETED functions ({len(fns_by_status['red'])}):")
+        for f in fns_by_status["red"]:
+            lines.append(f"  - {f}")
+    if fns_by_status["yellow"]:
+        lines.append(f"\nMODIFIED functions ({len(fns_by_status['yellow'])}):")
+        for f in fns_by_status["yellow"]:
+            lines.append(f"  ~ {f}")
+
+    total = sum(len(v) for v in files_by_status.values())
+    changed = len(files_by_status["yellow"]) + len(files_by_status["red"])
+    lines.append(f"\nTotal: {total} files tracked, {changed} changed or deleted")
+
+    return "\n".join(lines)

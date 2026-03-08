@@ -8,16 +8,19 @@ from langgraph_checkpoint_surrealdb import SurrealSaver
 from surrealdb import AsyncSurreal
 
 from agent.state import AgentState
-from agent.tools import hybrid_search
+from agent.tools import hybrid_search, trace_impact, version_diff
 
 load_dotenv()
 
-TOOLS = [hybrid_search]
+TOOLS = [hybrid_search, trace_impact, version_diff]
 
 SYSTEM_PROMPT = (
-    "You are a codebase assistant. "
-    "Always call hybrid_search before answering. "
-    "Answer only from the tool results — never from prior knowledge."
+    "You are a codebase assistant with three tools:\n"
+    "- hybrid_search: find functions by concept or name (semantic + keyword fusion)\n"
+    "- trace_impact: find what calls a function and what would break if it changed (graph traversal)\n"
+    "- version_diff: see what changed between versions — files and functions (red/yellow/green)\n"
+    "Always use tools before answering. Use version_diff first for 'what changed' questions, "
+    "then trace_impact on modified items to assess impact. Answer only from tool results."
 )
 
 
