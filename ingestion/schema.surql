@@ -53,7 +53,8 @@ DEFINE FIELD IF NOT EXISTS embedding      ON `function` TYPE option<array>;
 DEFINE FIELD IF NOT EXISTS ingestion_id   ON `function` TYPE string;
 DEFINE FIELD IF NOT EXISTS content_hash   ON `function` TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS diff_status    ON `function` TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS source         ON `function` TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS source            ON `function` TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS suggested_docstring ON `function` TYPE option<string>;
 
 REMOVE INDEX IF EXISTS fn_name_file_class_idx ON TABLE `function`;
 DEFINE INDEX fn_name_file_class_iid_idx ON `function` FIELDS name, file, class_name, ingestion_id UNIQUE;
@@ -82,5 +83,8 @@ REMOVE INDEX IF EXISTS fn_name_ft ON TABLE `function`;
 DEFINE INDEX fn_name_ft ON `function` FIELDS name FULLTEXT ANALYZER fn_analyzer BM25;
 REMOVE INDEX IF EXISTS fn_docstring_ft ON TABLE `function`;
 DEFINE INDEX fn_docstring_ft ON `function` FIELDS docstring FULLTEXT ANALYZER fn_analyzer BM25;
+REMOVE INDEX IF EXISTS fn_generated_summary_ft ON TABLE `function`;
+REMOVE INDEX IF EXISTS fn_suggested_docstring_ft ON TABLE `function`;
+DEFINE INDEX fn_suggested_docstring_ft ON `function` FIELDS suggested_docstring FULLTEXT ANALYZER fn_analyzer BM25;
 REMOVE INDEX IF EXISTS fn_embedding_hnsw ON TABLE `function`;
 DEFINE INDEX fn_embedding_hnsw ON `function` FIELDS embedding HNSW DIMENSION 768 DIST COSINE;
