@@ -249,20 +249,6 @@ def _run_ingestion(
 
         _set_stage("Finalizing...")
 
-        # 4. Clear diff_status from prev version's nodes in DB
-        if prev_ingestion_id:
-            async def _clear_diff_status():
-                async with get_db_client() as db:
-                    await db.query(
-                        "UPDATE file SET diff_status = NONE WHERE ingestion_id = $iid",
-                        {"iid": prev_ingestion_id},
-                    )
-                    await db.query(
-                        "UPDATE `function` SET diff_status = NONE WHERE ingestion_id = $iid",
-                        {"iid": prev_ingestion_id},
-                    )
-            asyncio.run(_clear_diff_status())
-
         diff_highlights.clear()
         progress.pop("diff_base_iid", None)
         _set_stage("Done")

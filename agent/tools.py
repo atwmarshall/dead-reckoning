@@ -260,6 +260,33 @@ def version_diff(module: str = "") -> str:
     """Summarise what changed in the most recent version comparison.
     Pass a filename to filter, or leave empty for the full diff summary.
     Use when asked what changed, what's new, or what was deleted."""
+    # Auto-discover versions from ingestion table
+    ingestions = _get_rows(asyncio.run(_query(
+        "SELECT * FROM ingestion ORDER BY created_at DESC LIMIT 5"
+    )))
+
+    version_header = ""
+    if ingestions:
+        latest = ingestions[0]
+        repo_name = latest.get("repo_name", latest.get("repo_path", "unknown"))
+        latest_time = latest.get("created_at", "?")
+        latest_files = latest.get("file_count", "?")
+        if len(ingestions) >= 2:
+            prev = ingestions[1]
+            prev_time = prev.get("created_at", "?")
+            prev_files = prev.get("file_count", "?")
+            version_header = (
+                f"Comparing versions for: {repo_name}\n"
+                f"  Previous: {prev_time} ({prev_files} files)\n"
+                f"  Current:  {latest_time} ({latest_files} files)\n\n"
+            )
+        else:
+            version_header = (
+                f"Repository: {repo_name}\n"
+                f"  Latest ingestion: {latest_time} ({latest_files} files)\n"
+                f"  (Only one version found — ingest again to compare)\n\n"
+            )
+
     file_condition = "AND path CONTAINS $module" if module else ""
     file_rows = _get_rows(asyncio.run(_query(
         f"""
@@ -284,7 +311,7 @@ def version_diff(module: str = "") -> str:
     )))
 
     if not file_rows and not fn_rows:
-        return "No version diff data found. Ingest two versions to see what changed."
+        return version_header + "No version diff data found. Ingest two versions to see what changed."
 
     files_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": []}
     for row in file_rows:
@@ -298,7 +325,10 @@ def version_diff(module: str = "") -> str:
         if s in fns_by_status:
             fns_by_status[s].append(f"{row.get('name', '?')} in {row.get('path', '?')}")
 
-    lines = ["Version Diff Summary", "=" * 40]
+    lines = []
+    if version_header:
+        lines.append(version_header.rstrip())
+    lines.extend(["Version Diff Summary", "=" * 40])
 
     if files_by_status["red"]:
         lines.append(f"\nDELETED files ({len(files_by_status['red'])}):")
