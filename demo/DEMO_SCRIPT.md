@@ -8,23 +8,50 @@ Rehearse it 3 times Saturday evening. Know every click cold. Have all tabs open 
 
 ## Setup (before judges arrive)
 
+### What `seed_demo.py` does
+
+1. Wipes all data + applies schema (including BM25 full-text and HNSW vector indexes)
+2. Ingests v1 sample repo with proper ingestion records, content hashes, and tar snapshots
+3. Creates call edges for the `trace_impact` graph traversal tool
+4. Optionally ingests v2 + computes diff with `--with-v2` (for testing the full flow)
+5. Prints next steps
+
+### Demo setup commands
+
+```bash
+# Sunday morning — seed v1 only (v2 is ingested live during the demo)
+uv run python demo/seed_demo.py
+
+# Open the app — leave on the Knowledge Graph tab
+uv run streamlit run ui/app.py
+```
+
+To test the full pipeline beforehand (v1 + v2 + diff + all tools):
+```bash
+uv run python demo/seed_demo.py --with-v2
+uv run pytest tests/test_tools.py -v
+```
+
+### Tabs to have open
+
 ```
 Browser tab 1: Streamlit app (localhost:8501) — Knowledge Graph tab, v1 already ingested
 Browser tab 2: LangSmith (smith.langchain.com) — dead-reckoning project
 Terminal: open, minimised, ready
 ```
 
-**State before judges arrive:**
+### State before judges arrive
+
 - v1 sample repo fully ingested — graph shows all green nodes
 - v1 ingestion was interrupted mid-run and resumed — both runs visible in LangSmith
 - v2 sample repo NOT yet ingested — waiting to trigger live
 - Sidebar shows: `Snapshot: 48 KB · abc12345.tar`
 
-**Run Sunday morning to set this up:**
-```bash
-python demo/seed_demo.py --version v1   # ingest v1, interrupt at ~50%, resume
-# Leave the app open on the graph tab
-```
+### Demo flow
+
+- **Sunday morning:** `uv run python demo/seed_demo.py` (just v1)
+- **Live demo:** Ingest v2 through the UI → diff colours appear → query the agent
+- **For testing beforehand:** `uv run python demo/seed_demo.py --with-v2` (full pipeline)
 
 ---
 
@@ -214,13 +241,12 @@ agent.invoke(None, config)
 
 **If Streamlit crashes entirely:**
 ```bash
-python -c "
+uv run python -c "
 from agent.graph import build_query_agent
 agent = build_query_agent()
 config = {'configurable': {'thread_id': 'demo-fallback'}}
 r = agent.invoke({
     'messages': [('user', 'what changed between versions and what might be affected?')],
-    'repo_path': 'tests/fixtures/sample_repo/v1'
 }, config)
 print(r['messages'][-1].content)
 "

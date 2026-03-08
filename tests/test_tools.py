@@ -35,13 +35,13 @@ class TestHybridSearch:
         has_graph_context = any("class:" in r or "siblings:" in r for r in results)
         assert has_graph_context, "At least one result should be enriched with graph context"
 
-    def test_http_request_logic_query(self):
-        """Demo query: 'which functions handle the core HTTP request logic?'"""
+    def test_demo_query_database_config(self):
+        """Demo-style query: should find config-related functions"""
         from agent.tools import hybrid_search
-        results = hybrid_search.invoke({"query": "which functions handle the core HTTP request logic?"})
+        results = hybrid_search.invoke({"query": "database configuration settings"})
         assert len(results) > 0
         names = "\n".join(results).lower()
-        assert "request" in names, "Should find request-related functions"
+        assert "config" in names, "Should find config-related functions"
 
     def test_keyword_matching_works(self):
         from agent.tools import hybrid_search
@@ -86,12 +86,12 @@ class TestTraceImpact:
         result = trace_impact.invoke({"symbol": "nonexistent_function_xyz_999"})
         assert "No functions found" in result
 
-    def test_httpx_send_single_request(self):
-        """Demo-adjacent: _send_single_request has callers in the httpx graph"""
+    def test_display_items_has_callers(self):
+        """display_items in sample_repo is called by run"""
         from agent.tools import trace_impact
-        result = trace_impact.invoke({"symbol": "_send_single_request"})
+        result = trace_impact.invoke({"symbol": "display_items"})
         assert "direct callers" in result
-        assert "_send_handling_redirects" in result
+        assert "run" in result
 
     def test_leaf_function_shows_no_callers(self):
         from agent.tools import trace_impact
