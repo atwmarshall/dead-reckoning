@@ -310,13 +310,13 @@ def _fetch_graph_data(ingestion_id: str | None = None) -> tuple:
                 repos   = await db.query("SELECT id, name FROM repo WHERE ingestion_id = $iid LIMIT 100", p)
                 folders = await db.query("SELECT id, path FROM folder WHERE ingestion_id = $iid LIMIT 5000", p)
                 files   = await db.query("SELECT id, path, diff_status FROM file WHERE ingestion_id = $iid LIMIT 5000", p)
-                fns     = await db.query("SELECT id, name, diff_status FROM `function` WHERE ingestion_id = $iid LIMIT 5000", p)
+                fns     = await db.query("SELECT id, name, diff_status, has_docstring, docstring, suggested_docstring FROM `function` WHERE ingestion_id = $iid LIMIT 5000", p)
                 classes = await db.query("SELECT id, name FROM `class` WHERE ingestion_id = $iid LIMIT 5000", p)
             else:
                 repos   = await db.query("SELECT id, name FROM repo LIMIT 100")
                 folders = await db.query("SELECT id, path FROM folder LIMIT 5000")
                 files   = await db.query("SELECT id, path, diff_status FROM file LIMIT 5000")
-                fns     = await db.query("SELECT id, name, diff_status FROM `function` LIMIT 5000")
+                fns     = await db.query("SELECT id, name, diff_status, has_docstring, docstring, suggested_docstring FROM `function` LIMIT 5000")
                 classes = await db.query("SELECT id, name FROM `class` LIMIT 5000")
 
             contains_edges = await db.query("SELECT in, out FROM contains LIMIT 5000")
@@ -397,7 +397,11 @@ def _build_agraph(
             else:
                 color = FUNC_COLOR
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=color, size=12))
+                doc = (row.get("docstring") or "").strip()
+                suggested = (row.get("suggested_docstring") or "").strip()
+                tooltip_body = doc or (f"(suggested) {suggested}" if suggested else "")
+                title = f"{label}\n{tooltip_body}" if tooltip_body else label
+                nodes.append(Node(id=nid, label=label, color=color, size=12, title=title))
                 seen.add(nid)
 
     if show_classes:
@@ -454,13 +458,23 @@ NODE_TYPE_COLORS = {
 }
 
 
+def _safe_record(node_id: str) -> str:
+    """Wrap the table part of a record ID in backticks to handle reserved words
+    like 'function' and 'class' in SurrealQL queries."""
+    if ":" in node_id:
+        table, record = node_id.split(":", 1)
+        return f"`{table}`:{record}"
+    return f"`{node_id}`"
+
+
 def _fetch_node_detail(node_id: str) -> dict:
     """Fetch properties, edge counts, and neighbors for a node."""
     table = node_id.split(":")[0] if ":" in node_id else "unknown"
+    safe = _safe_record(node_id)
 
     async def _query():
         async with get_db_client() as db:
-            props_raw = await db.query(f"SELECT * FROM {node_id}")
+            props_raw = await db.query(f"SELECT * FROM {safe}")
             props = {}
             rows = _get_rows(props_raw)
             if rows:
@@ -470,7 +484,7 @@ def _fetch_node_detail(node_id: str) -> dict:
             neighbors = {}
             for et in EDGE_TABLES:
                 in_count_raw = await db.query(
-                    f"SELECT count() AS cnt FROM {et} WHERE out = {node_id} GROUP ALL"
+                    f"SELECT count() AS cnt FROM {et} WHERE out = {safe} GROUP ALL"
                 )
                 in_cnt = 0
                 in_rows = _get_rows(in_count_raw)
@@ -478,7 +492,7 @@ def _fetch_node_detail(node_id: str) -> dict:
                     in_cnt = in_rows[0].get("cnt", 0)
 
                 out_count_raw = await db.query(
-                    f"SELECT count() AS cnt FROM {et} WHERE in = {node_id} GROUP ALL"
+                    f"SELECT count() AS cnt FROM {et} WHERE in = {safe} GROUP ALL"
                 )
                 out_cnt = 0
                 out_rows = _get_rows(out_count_raw)
@@ -491,7 +505,7 @@ def _fetch_node_detail(node_id: str) -> dict:
                 et_neighbors = []
                 if out_cnt:
                     out_neighbors_raw = await db.query(
-                        f"SELECT out AS target FROM {et} WHERE in = {node_id} LIMIT 20"
+                        f"SELECT out AS target FROM {et} WHERE in = {safe} LIMIT 20"
                     )
                     for r in _get_rows(out_neighbors_raw):
                         tid = str(r.get("target", ""))
@@ -500,7 +514,7 @@ def _fetch_node_detail(node_id: str) -> dict:
 
                 if in_cnt:
                     in_neighbors_raw = await db.query(
-                        f"SELECT in AS source FROM {et} WHERE out = {node_id} LIMIT 20"
+                        f"SELECT in AS source FROM {et} WHERE out = {safe} LIMIT 20"
                     )
                     for r in _get_rows(in_neighbors_raw):
                         sid = str(r.get("source", ""))
@@ -725,6 +739,8 @@ def _init_state() -> None:
         "ingest_stop_event": None,
         "ingest_thread_id": None,
         "ingest_progress": {"processed": 0, "total": 0, "status": "idle"},
+        "enrich_thread": None,
+        "enrich_progress": {"enriched": 0, "status": "idle"},
         "diff_highlights": {},
         "diff_status_log": [],
         "pending_ingest": None,
@@ -759,6 +775,28 @@ def _init_state() -> None:
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+
+# ── Enrichment background thread ──────────────────────────────────────────
+
+def _run_enrichment(progress: dict) -> None:
+    """Generate suggested docstrings for all undocumented functions in a background thread."""
+    import asyncio as _asyncio
+    from ingestion.enricher import enrich_functions as _enrich
+    from ingestion.loader import get_db_client as _get_db
+
+    progress["status"] = "running"
+    progress["enriched"] = 0
+    try:
+        async def _do():
+            async with _get_db() as db:
+                return await _enrich(db)
+        n = _asyncio.run(_do())
+        progress["enriched"] = n
+        progress["status"] = "done"
+    except Exception as exc:
+        progress["status"] = "error"
+        progress["error"] = str(exc)
 
 
 # ── Ingestion control helpers ──────────────────────────────────────────────
@@ -1090,7 +1128,86 @@ with st.sidebar:
                 for line in reversed(log[-100:]):
                     st.caption(line)
 
-    # ── Expander 2: Node Details ───────────────────────────────────────
+    # ── Expander 2: Enrich ────────────────────────────────────────────
+    with st.expander("Suggest Docstrings", expanded=False):
+        ep = st.session_state.enrich_progress
+        e_status = ep.get("status", "idle")
+        e_thread: threading.Thread | None = st.session_state.enrich_thread
+        e_alive = e_thread is not None and e_thread.is_alive()
+
+        st.caption(
+            "Generate suggested docstrings for every undocumented function "
+            "using the local LLM. Already-enriched functions are skipped."
+        )
+
+        ecol1, ecol2 = st.columns(2)
+        with ecol1:
+            if st.button(
+                "Add suggested docstrings",
+                disabled=e_alive,
+                use_container_width=True,
+                type="primary",
+                key="enrich_btn",
+            ):
+                new_ep = {"enriched": 0, "status": "running"}
+                st.session_state.enrich_progress = new_ep
+                t = threading.Thread(
+                    target=_run_enrichment,
+                    args=(new_ep,),
+                    daemon=True,
+                )
+                st.session_state.enrich_thread = t
+                t.start()
+                st.rerun()
+
+        with ecol2:
+            if st.button(
+                "Re-generate all",
+                disabled=e_alive,
+                use_container_width=True,
+                key="enrich_force_btn",
+                help="Re-generate suggested docstrings for ALL undocumented functions, even if already enriched.",
+            ):
+                import asyncio as _asyncio
+                from ingestion.enricher import enrich_functions as _enrich_f
+                from ingestion.loader import get_db_client as _get_db_f
+
+                def _run_force(progress: dict) -> None:
+                    progress["status"] = "running"
+                    try:
+                        async def _do():
+                            async with _get_db_f() as db:
+                                return await _enrich_f(db, force=True)
+                        progress["enriched"] = _asyncio.run(_do())
+                        progress["status"] = "done"
+                    except Exception as exc:
+                        progress["status"] = "error"
+                        progress["error"] = str(exc)
+
+                new_ep = {"enriched": 0, "status": "running"}
+                st.session_state.enrich_progress = new_ep
+                t = threading.Thread(target=_run_force, args=(new_ep,), daemon=True)
+                st.session_state.enrich_thread = t
+                t.start()
+                st.rerun()
+
+        if e_alive or e_status in ("running",):
+            st.info("Running… check back in a moment.")
+            st.rerun()
+        elif e_status == "done":
+            n = ep.get("enriched", 0)
+            # Clear cached node detail so it re-fetches with the new suggested_docstring
+            if n and not ep.get("_cache_cleared"):
+                st.session_state["selected_node_detail"] = None
+                ep["_cache_cleared"] = True
+            if n:
+                st.success(f"Done — {n} function(s) enriched.")
+            else:
+                st.success("Done — all functions already have suggested docstrings.")
+        elif e_status == "error":
+            st.error(f"Error: {ep.get('error', 'unknown')}")
+
+    # ── Expander 3: Node Details ───────────────────────────────────────
     selected = st.session_state.get("selected_node_id")
     with st.expander("Node Details", expanded=bool(selected)):
         if selected:
@@ -1107,7 +1224,7 @@ with st.sidebar:
         else:
             st.caption("Click a node in the graph to see details.")
 
-    # ── Expander 3: Settings ────────────────────────────────────────────
+    # ── Expander 4: Settings ────────────────────────────────────────────
     with st.expander("Settings", expanded=False):
         # Refresh button
         col1, col2 = st.columns([1, 3])
