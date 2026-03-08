@@ -15,7 +15,6 @@ from typing_extensions import TypedDict
 
 from agent.graph import _ensure_checkpoint_tables
 from ingestion.diff import content_hash_file
-from ingestion.enricher import enrich_functions
 from ingestion.loader import finalize_ingestion, get_db_client, load_calls, load_file
 from ingestion.parser import parse_file, parse_repo
 
@@ -131,17 +130,6 @@ def _create_call_edges(state: IngestionState) -> dict:
     return {}
 
 
-def _enrich_summaries(state: IngestionState) -> dict:
-    """Third-pass node: generate synthetic summaries for undocumented functions."""
-    async def _run():
-        async with get_db_client() as db:
-            return await enrich_functions(db)
-
-    count = asyncio.run(_run())
-    logger.info("Enriched %d undocumented functions", count)
-    return {}
-
-
 def build_ingestion_agent():
     logger.info("Building ingestion agent — ensuring checkpoint tables...")
     asyncio.run(_ensure_checkpoint_tables())
@@ -163,7 +151,6 @@ def build_ingestion_agent():
     graph.add_node("review_diff", _review_diff)
     graph.add_node("process_file", _process_file)
     graph.add_node("create_call_edges", _create_call_edges)
-    graph.add_node("enrich_summaries", _enrich_summaries)
     graph.add_node("finalize", _finalize)
     graph.set_entry_point("initialize")
     graph.add_edge("initialize", "review_diff")
@@ -175,8 +162,7 @@ def build_ingestion_agent():
         "process_file", _has_more,
         {"process_file": "process_file", "create_call_edges": "create_call_edges"},
     )
-    graph.add_edge("create_call_edges", "enrich_summaries")
-    graph.add_edge("enrich_summaries", "finalize")
+    graph.add_edge("create_call_edges", "finalize")
     graph.add_edge("finalize", END)
 
     return graph.compile(checkpointer=checkpointer)
