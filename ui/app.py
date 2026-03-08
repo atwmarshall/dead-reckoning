@@ -202,12 +202,19 @@ def _run_ingestion(
                 logger.info("Init stream chunk keys: %s", list(chunk.keys()) if isinstance(chunk, dict) else type(chunk))
             logger.info("Init stream complete")
 
-            # 3b. If interrupted (prev_ingestion_id was set), auto-resume.
-            # Diff colours are already computed and visible — no need to pause.
+            # 3b. If interrupted (prev_ingestion_id was set), pause for user review.
             graph_state = agent.get_state(config)
             logger.info("Graph state.next = %s", graph_state.next)
             if graph_state.next:
-                logger.info("Diff review interrupt hit — auto-resuming")
+                logger.info("Diff review interrupt hit — waiting for user to resume")
+                progress["status"] = "awaiting_resume"
+                _set_stage("Diff ready — review the graph, then click Resume.")
+                resume_event = progress.get("resume_event")
+                if resume_event:
+                    resume_event.wait()  # block until UI sets the event
+                    resume_event.clear()
+                logger.info("User resumed — continuing ingestion")
+                progress["status"] = "running"
                 stream_cmd = Command(resume=True)
             else:
                 stream_cmd = None  # fresh ingest already finished in one stream
@@ -1062,7 +1069,15 @@ with st.sidebar:
                             _start_ingestion(pending, prev_ingestion_id=None)
                             st.rerun()
 
-        elif status in ("running", "awaiting_resume"):
+        elif status == "awaiting_resume":
+            if st.button("Resume", use_container_width=True, type="primary"):
+                p = st.session_state.ingest_progress
+                resume_ev = p.get("resume_event")
+                if resume_ev:
+                    resume_ev.set()  # unblock background thread
+                st.rerun()
+
+        elif status == "running":
             if st.button("Pause", use_container_width=True):
                 if st.session_state.ingest_stop_event:
                     st.session_state.ingest_stop_event.set()

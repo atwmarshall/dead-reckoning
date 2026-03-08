@@ -106,24 +106,41 @@ async def rrf_demo():
     await db.signin({'username': os.environ['SURREALDB_USER'], 'password': os.environ['SURREALDB_PASS']})
     await db.use(os.environ['SURREALDB_NS'], os.environ['SURREALDB_DB'])
 
-    rows = await db.query_raw('''
-        LET \$vs = SELECT name, file.path AS path,
-                          vector::similarity::cosine(embedding, \$vec) AS score
-                   FROM function
-                   WHERE embedding <|5,100|> \$vec;
-        LET \$ft = SELECT name, file.path AS path,
-                          search::score(0) + search::score(1) AS score
-                   FROM function
-                   WHERE name @0@ \$keyword OR docstring @1@ \$keyword
-                   ORDER BY score DESC LIMIT 10;
-        RETURN search::rrf([\$vs, \$ft], 5, 60);
-    ''', {'vec': vec, 'keyword': 'auth'})
+    # Vector search (top-5 nearest neighbours among embedded functions)
+    vs_rows = await db.query('''
+        SELECT name, file.path AS path,
+               vector::similarity::cosine(embedding, \$vec) AS score
+        FROM \`function\`
+        WHERE embedding IS NOT NONE AND embedding <|5,100|> \$vec
+    ''', {'vec': vec})
 
-    # Extract results from query_raw response
-    stmts = rows.get('result', [])
-    results = stmts[-1].get('result', []) if stmts else []
-    for r in results[:5]:
-        print(f\"  {r.get('name', '?'):30s}  {r.get('path', '?')}\")
+    # BM25 keyword search
+    ft_rows = await db.query('''
+        SELECT name, file.path AS path,
+               search::score(0) + search::score(1) AS score
+        FROM \`function\`
+        WHERE name @0@ \$keyword OR docstring @1@ \$keyword
+        ORDER BY score DESC LIMIT 10
+    ''', {'keyword': 'auth'})
+
+    # RRF fusion (same algorithm as SurrealDB's search::rrf)
+    scores, data_map = {}, {}
+    k = 60
+    for rank, r in enumerate((vs_rows or [])[:5]):
+        name = r.get('name', '?')
+        scores[name] = scores.get(name, 0) + 1 / (k + rank + 1)
+        data_map[name] = r
+    for rank, r in enumerate((ft_rows or [])[:10]):
+        name = r.get('name', '?')
+        scores[name] = scores.get(name, 0) + 1 / (k + rank + 1)
+        if name not in data_map:
+            data_map[name] = r
+
+    ranked = sorted(scores.items(), key=lambda x: -x[1])
+    print('  RRF hybrid results (vector + BM25):')
+    for name, score in ranked[:5]:
+        path = data_map.get(name, {}).get('path', '?')
+        print(f\"  {name:30s}  {path}\")
     await db.close()
 
 asyncio.run(rrf_demo())
@@ -146,9 +163,9 @@ async def impact():
 
     rows = await db.query('''
         SELECT name, file.path AS path,
-               <-calls<-function.name AS direct_callers,
-               <-calls<-function<-calls<-function.name AS transitive_callers
-        FROM function
+               <-calls<-\`function\`.name AS direct_callers,
+               <-calls<-\`function\`<-calls<-\`function\`.name AS transitive_callers
+        FROM \`function\`
         WHERE name CONTAINS \"_send\"
     ''')
     print('--- Blast radius for _send (httpx) ---')
