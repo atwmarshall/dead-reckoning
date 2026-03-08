@@ -123,6 +123,7 @@ def _format(doc: dict) -> str:
     name = doc.get("name", "?")
     path = doc.get("path") or "?"
     docstring = (doc.get("docstring") or "").strip()
+    suggested = (doc.get("suggested_docstring") or "").strip()
     documented = doc.get("has_docstring", bool(docstring))
 
     parent = doc.get("_parent_class") or {}
@@ -140,7 +141,9 @@ def _format(doc: dict) -> str:
     if siblings:
         lines.append(f"siblings: {', '.join(siblings)}")
     if docstring:
-        lines.append(f"summary:  {docstring}")
+        lines.append(f"docstring:          {docstring}")
+    elif suggested:
+        lines.append(f"suggested docstring: {suggested}")
 
     return "\n".join(lines)
 
@@ -163,9 +166,9 @@ def _do_hybrid_search(query: str) -> list[str]:
                   FROM `function`
                   WHERE embedding <|5,100|> $vec;
         LET $ft = SELECT *, file.path AS path,
-                         search::score(0) + search::score(1) AS score
+                         search::score(0) + search::score(1) + search::score(2) AS score
                   FROM `function`
-                  WHERE name @0@ $keyword OR docstring @1@ $keyword
+                  WHERE name @0@ $keyword OR docstring @1@ $keyword OR suggested_docstring @2@ $keyword
                   ORDER BY score DESC LIMIT 10;
         RETURN search::rrf([$vs, $ft], 5, 60);
         """,
