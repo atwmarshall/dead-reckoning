@@ -4,7 +4,7 @@
 
 `dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** navigates the graph to answer architecture questions in plain English. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
 
-Built at the LangChain × SurrealDB London Hackathon, March 2025.
+Built at the LangChain × SurrealDB London Hackathon, March 2026.
 
 ---
 
@@ -52,7 +52,7 @@ The 46 nodes already built are still in the graph.
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/YOUR_USERNAME/dead-reckoning
+git clone https://github.com/atwmarshall/dead-reckoning
 cd dead-reckoning
 uv venv
 uv sync
@@ -92,12 +92,14 @@ uv run python ingestion/seed.py --repo /path/to/your/python/repo
 Wipes all data, reapplies schema, and re-ingests the demo repo in one command:
 
 ```bash
-# Clone the demo repo (httpx) if you haven't already
-git clone https://github.com/encode/httpx /tmp/demo-repo
+# Option A: ingest encode/httpx (well-known real-world repo — auto-clones)
+uv run python demo/seed_demo.py --httpx
 
-# Full reset + ingest (run this before any live demo)
+# Option B: ingest the sample fixture repo (small, fast, used for v1→v2 diff demo)
 uv run python demo/seed_demo.py
-# Demo ready. Files: 34 | Functions: 287 | Classes: 42
+
+# Option C: ingest fixture v1 + v2 with diff (for testing the full pipeline)
+uv run python demo/seed_demo.py --with-v2
 ```
 
 See [`demo/DEMO_SCRIPT.md`](./demo/DEMO_SCRIPT.md) for the exact live judging script.
@@ -109,23 +111,27 @@ See [`demo/DEMO_SCRIPT.md`](./demo/DEMO_SCRIPT.md) for the exact live judging sc
 ```
 dead-reckoning/
 ├── ingestion/
-│   ├── parser.py          # AST extraction: files, functions, classes, imports
+│   ├── parser.py          # AST extraction: files, functions, classes, imports, calls
 │   ├── loader.py          # Upsert entities + edges into SurrealDB
-│   ├── schema.surql       # SurrealDB table + index definitions
-│   └── seed.py            # CLI: walk a repo, checkpoint after each file
+│   ├── schema.surql       # SurrealDB table + index definitions (BM25, HNSW)
+│   ├── seed.py            # CLI: walk a repo and load into SurrealDB
+│   ├── diff.py            # Version diffing: snapshot comparison + diff_status
+│   ├── snapshot.py        # Tar-based content-addressed snapshots
+│   ├── github.py          # GitHub URL detection + shallow clone
+│   └── apply_schema.py    # Apply schema.surql programmatically
 ├── agent/
 │   ├── state.py           # AgentState TypedDict
-│   ├── tools.py           # get_dependencies, find_callers, semantic_search
-│   └── graph.py           # LangGraph StateGraph + checkpointer wiring
+│   ├── tools.py           # hybrid_search, trace_impact, version_diff
+│   ├── graph.py           # LangGraph query agent + SurrealDB checkpointer
+│   └── ingest_graph.py    # LangGraph ingestion agent (resumable)
 ├── ui/
 │   └── app.py             # Streamlit: graph viz + chat interface
 ├── demo/
 │   ├── seed_demo.py       # Pre-index the demo repo cleanly
 │   └── DEMO_SCRIPT.md     # Exact steps + narration for live judging
 ├── tests/
-│   ├── test_parser.py
-│   ├── test_loader.py
-│   └── test_agent.py
+│   ├── test_parser.py     # Unit tests (offline, no DB)
+│   └── test_tools.py      # Integration tests (live SurrealDB + Ollama)
 ├── .env.example
 ├── pyproject.toml
 ├── ARCHITECTURE.md        # Schema, integration points, design decisions
@@ -155,7 +161,7 @@ see .env.example
 
 - [SurrealDB](https://surrealdb.com) — multi-model database powering the knowledge graph
 - [LangGraph](https://langchain-ai.github.io/langgraph/) — agent orchestration and state management
-- [langgraph-checkpoint-surrealdb](https://github.com/TODO) — SurrealDB checkpointer for LangGraph
+- [langgraph-checkpoint-surrealdb](https://pypi.org/project/langgraph-checkpoint-surrealdb/) — SurrealDB checkpointer for LangGraph
 - [LangChain](https://langchain.com) — LLM tooling and observability via LangSmith
 
 ---

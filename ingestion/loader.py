@@ -323,8 +323,10 @@ async def load_file(
         edge_count += 1
 
     # Upsert classes + contains edges
+    class_id_map: dict[str, str] = {}  # class_name -> bare record ID
     for cls in parsed["classes"]:
         clsid = _class_id(path, cls["name"], ingestion_id)
+        class_id_map[cls["name"]] = clsid
         await db.query(
             """UPSERT type::record('class', $id) SET
                name = $name, file = type::record('file', $fid),
@@ -340,6 +342,19 @@ async def load_file(
         class_count += 1
         edge_count += 1
 
+    # Create inherits edges (class -> base class) for bases defined in the same file
+    for cls in parsed["classes"]:
+        child_clsid = class_id_map[cls["name"]]
+        for base_name in cls.get("bases", []):
+            if base_name in class_id_map:
+                parent_clsid = class_id_map[base_name]
+                eid = _edge_id(child_clsid, "inherits", parent_clsid)
+                await db.query(
+                    "INSERT RELATION INTO inherits { id: type::record('inherits', $eid), in: type::record('class', $child), out: type::record('class', $parent) } ON DUPLICATE KEY UPDATE in = in",
+                    {"eid": eid, "child": child_clsid, "parent": parent_clsid},
+                )
+                edge_count += 1
+
     return {"functions": fn_count, "classes": class_count, "edges": edge_count}
 
 
@@ -349,9 +364,9 @@ async def load_file(
 
 @traceable(name="load_calls", run_type="chain")
 async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: str = "") -> int:
-    """Create function→calls→function edges for all parsed files (second pass).
+    """Create function→calls→function edges and file→imports→file edges (second pass).
 
-    Must be called after all files are loaded so callee nodes already exist.
+    Must be called after all files are loaded so callee/importee nodes already exist.
     Returns the number of edges created.
     """
     # Collect all unique callee names referenced across every function
@@ -360,39 +375,61 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
         for fn in parsed.get("functions", []):
             all_callee_names.update(fn.get("calls") or [])
 
-    if not all_callee_names:
-        return 0
-
-    # Batch-fetch all function nodes whose names match any callee
-    rows = await db.query(
-        "SELECT id, name FROM `function` WHERE name IN $names",
-        {"names": list(all_callee_names)},
-    )
-    # Unwrap SurrealDB response format
-    if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "result" in rows[0]:
-        rows = rows[0].get("result") or []
-
-    # Build name → list of bare record IDs (strip "function:abc123" → "abc123")
-    callee_map: dict[str, list[str]] = {}
-    for row in (rows or []):
-        name = row.get("name")
-        rid = str(row.get("id", ""))
-        bare = rid.split(":")[-1] if ":" in rid else rid
-        if name and bare:
-            callee_map.setdefault(name, []).append(bare)
-
     edge_count = 0
+
+    # --- Function calls edges ---
+    if all_callee_names:
+        # Batch-fetch all function nodes whose names match any callee
+        rows = await db.query(
+            "SELECT id, name FROM `function` WHERE name IN $names",
+            {"names": list(all_callee_names)},
+        )
+        # Unwrap SurrealDB response format
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "result" in rows[0]:
+            rows = rows[0].get("result") or []
+
+        # Build name → list of bare record IDs (strip "function:abc123" → "abc123")
+        callee_map: dict[str, list[str]] = {}
+        for row in (rows or []):
+            name = row.get("name")
+            rid = str(row.get("id", ""))
+            bare = rid.split(":")[-1] if ":" in rid else rid
+            if name and bare:
+                callee_map.setdefault(name, []).append(bare)
+
+        for parsed in parsed_files:
+            file_path = parsed["path"]
+            for fn in parsed.get("functions", []):
+                caller_bare = _function_id(file_path, fn.get("class_name"), fn["name"], ingestion_id)
+                for callee_name in (fn.get("calls") or []):
+                    for callee_bare in callee_map.get(callee_name, []):
+                        eid = _edge_id(caller_bare, "calls", callee_bare)
+                        await db.query(
+                            "INSERT RELATION INTO calls { id: type::record('calls', $eid), in: type::record('function', $caller), out: type::record('function', $callee) } ON DUPLICATE KEY UPDATE in = in",
+                            {"eid": eid, "caller": caller_bare, "callee": callee_bare},
+                        )
+                        edge_count += 1
+
+    # --- File imports edges ---
+    # Build a map of module_name → file bare ID for matching imports to files
+    file_id_by_stem: dict[str, str] = {}
     for parsed in parsed_files:
-        file_path = parsed["path"]
-        for fn in parsed.get("functions", []):
-            caller_bare = _function_id(file_path, fn.get("class_name"), fn["name"], ingestion_id)
-            for callee_name in (fn.get("calls") or []):
-                for callee_bare in callee_map.get(callee_name, []):
-                    eid = _edge_id(caller_bare, "calls", callee_bare)
-                    await db.query(
-                        "INSERT RELATION INTO calls { id: type::record('calls', $eid), in: type::record('function', $caller), out: type::record('function', $callee) } ON DUPLICATE KEY UPDATE in = in",
-                        {"eid": eid, "caller": caller_bare, "callee": callee_bare},
-                    )
-                    edge_count += 1
+        stem = os.path.splitext(os.path.basename(parsed["path"]))[0]
+        fid = _file_id(parsed["path"], ingestion_id)
+        file_id_by_stem[stem] = fid
+
+    for parsed in parsed_files:
+        from_fid = _file_id(parsed["path"], ingestion_id)
+        for imp in parsed.get("imports", []):
+            # Match against the final component of the import path
+            module_stem = imp.rsplit(".", 1)[-1]
+            to_fid = file_id_by_stem.get(module_stem)
+            if to_fid and to_fid != from_fid:
+                eid = _edge_id(from_fid, "imports", to_fid)
+                await db.query(
+                    "INSERT RELATION INTO imports { id: type::record('imports', $eid), in: type::record('file', $from_fid), out: type::record('file', $to_fid) } ON DUPLICATE KEY UPDATE in = in",
+                    {"eid": eid, "from_fid": from_fid, "to_fid": to_fid},
+                )
+                edge_count += 1
 
     return edge_count

@@ -1,8 +1,9 @@
 """Demo seed script — sets up v1 (and optionally v2 + diff) for the live demo.
 
 Usage:
-    uv run python demo/seed_demo.py               # v1 only (before judges arrive)
+    uv run python demo/seed_demo.py               # v1 fixture only (before judges arrive)
     uv run python demo/seed_demo.py --with-v2      # v1 + v2 + diff (for testing)
+    uv run python demo/seed_demo.py --httpx         # ingest httpx (well-known real repo)
     uv run python demo/seed_demo.py --reset-only    # wipe all data, apply schema
 """
 
@@ -16,6 +17,7 @@ from dotenv import load_dotenv
 from surrealdb import AsyncSurreal
 
 from ingestion.diff import DiffEngine, content_hash_file
+from ingestion.github import clone_repo
 from ingestion.loader import (
     create_ingestion,
     finalize_ingestion,
@@ -32,6 +34,8 @@ SCHEMA_PATH = Path(__file__).parent.parent / "ingestion" / "schema.surql"
 FIXTURES = Path(__file__).parent.parent / "tests" / "fixtures" / "sample_repo"
 V1_PATH = FIXTURES / "v1"
 V2_PATH = FIXTURES / "v2"
+
+HTTPX_URL = "https://github.com/encode/httpx"
 
 # All tables to wipe
 ALL_TABLES = [
@@ -154,6 +158,17 @@ async def verify_counts() -> dict:
     }
 
 
+async def ingest_httpx() -> str:
+    """Clone and ingest encode/httpx — a well-known Python HTTP client library."""
+    print(f"  Cloning {HTTPX_URL} ...")
+    local_path, cleanup = clone_repo(HTTPX_URL)
+    try:
+        ingestion_id = await ingest_version(Path(local_path), "httpx")
+    finally:
+        cleanup()
+    return ingestion_id
+
+
 async def main(args) -> None:
     print("=== Demo seed ===\n")
 
@@ -163,6 +178,29 @@ async def main(args) -> None:
 
     if args.reset_only:
         print("\nDone (reset only).")
+        return
+
+    # Ingest httpx if requested
+    if args.httpx:
+        print(f"\nStep 2: Ingesting httpx ({HTTPX_URL})...")
+        await ingest_httpx()
+
+        # Verify
+        print("\nVerifying...")
+        counts = await verify_counts()
+        print(
+            f"\nDemo ready (httpx).\n"
+            f"  Files: {counts['files']} | "
+            f"Functions: {counts['functions']} | "
+            f"Classes: {counts['classes']}"
+        )
+        print(
+            f"\nNext steps:\n"
+            f"  1. uv run streamlit run ui/app.py\n"
+            f"  2. Explore the httpx knowledge graph\n"
+            f"  3. Ask: 'which functions handle authentication?'\n"
+            f"  4. Ask: 'what would break if I changed send_request?'"
+        )
         return
 
     # Ingest v1
@@ -204,6 +242,7 @@ async def main(args) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed demo data for DeadReckoning")
     parser.add_argument("--with-v2", action="store_true", help="Also ingest v2 and compute diff")
+    parser.add_argument("--httpx", action="store_true", help="Ingest encode/httpx (well-known real repo)")
     parser.add_argument("--reset-only", action="store_true", help="Only wipe data and apply schema")
     args = parser.parse_args()
     asyncio.run(main(args))

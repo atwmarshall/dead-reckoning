@@ -19,8 +19,9 @@ Rehearse it 3 times Saturday evening. Know every click cold. Have all tabs open 
 ### Demo setup commands
 
 ```bash
-# Sunday morning — seed v1 only (v2 is ingested live during the demo)
-uv run python demo/seed_demo.py
+# Sunday morning — seed httpx (impressive graph for judges) + v1 fixture (for diff demo)
+uv run python demo/seed_demo.py --httpx
+uv run python demo/seed_demo.py          # adds v1 fixture on top
 
 # Open the app — leave on the Knowledge Graph tab
 uv run streamlit run ui/app.py
@@ -107,7 +108,7 @@ tar tf ~/.dead-reckoning/snapshots/$(ls -t ~/.dead-reckoning/snapshots/ | head -
 ```
 
 Say:
-> "This is a real tar file — OCI format, same content-addressing and whiteout semantics Docker uses. We implemented it in pure Python. No Docker daemon needed. You could docker import this."
+> "This is a real tar file — content-addressed, same principle Docker uses for image layers. SHA-256 per file, compared across versions. Pure Python stdlib, zero extra dependencies."
 
 ---
 
@@ -198,8 +199,8 @@ show me the diff summary for _auth
 **"How is this different from just using an LLM with the code as context?"**
 > "Context windows can't do multi-hop graph traversal. 'What calls this function, and what calls that?' is structural — you need the graph. And our search uses SurrealDB's native `search::rrf()` to fuse vector and keyword results inside the database, not in Python. LLMs also forget between sessions. Our agent accumulates knowledge across runs and versions."
 
-**"Why OCI tar format?"**
-> "Same content-addressing as Docker — SHA-256 per file, whiteout entries for deletions. Pure Python stdlib, zero extra dependencies. The snapshots are format-compatible: you can docker import them. We understood the spec well enough to implement it ourselves."
+**"Why tar-based snapshots?"**
+> "Same content-addressing principle as Docker image layers — SHA-256 per file, compared across versions. Pure Python stdlib (`tarfile` + `hashlib`), zero extra dependencies. Deletions are detected by set difference: if a file was in the old snapshot but not the new one, it's red."
 
 **"How granular is the diff?"**
 > "Function-level. We hash each function's source text and compare across versions. A modified file gets yellow, but inside it individual functions show green, yellow, or red — so you can see exactly which functions changed."

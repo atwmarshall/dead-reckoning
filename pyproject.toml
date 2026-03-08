@@ -8,6 +8,8 @@ dependencies = [
     "langgraph>=0.2",
     "langgraph-checkpoint-surrealdb>=0.1",
     "langchain-ollama>=0.2",
+    "langsmith>=0.1",
+    "ollama>=0.4",
     "python-dotenv>=1.0",
     "streamlit>=1.40",
     "streamlit-agraph>=0.0.45",
@@ -17,8 +19,8 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.dependecy-groups.dev]
-dependecy-groups.dev = [
+[dependency-groups]
+dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
