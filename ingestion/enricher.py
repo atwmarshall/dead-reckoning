@@ -32,6 +32,7 @@ def _clean_docstring(text: str) -> str:
 async def enrich_functions(
     db: AsyncSurreal,
     *,
+    ingestion_id: str | None = None,
     batch_size: int = 20,
     force: bool = False,
 ) -> int:
@@ -39,6 +40,7 @@ async def enrich_functions(
 
     Args:
         db: Open, authenticated SurrealDB client.
+        ingestion_id: If provided, only enrich functions from this ingestion.
         batch_size: How many functions to process per LLM/embed batch.
         force: If True, re-enrich functions that already have a suggested_docstring.
 
@@ -52,9 +54,10 @@ async def enrich_functions(
 
     # Fetch targets — include source so the LLM has actual code to work from
     where = "has_docstring = false" if force else "has_docstring = false AND suggested_docstring IS NONE"
-    rows = await db.query(
-        f"SELECT id, name, class_name, file.path AS path, source FROM `function` WHERE {where}",
-    )
+    if ingestion_id:
+        where += " AND ingestion_id = $iid"
+    query = f"SELECT id, name, class_name, file.path AS path, source FROM `function` WHERE {where}"
+    rows = await db.query(query, {"iid": ingestion_id}) if ingestion_id else await db.query(query)
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "result" in rows[0]:
         rows = rows[0].get("result") or []
     rows = rows or []
