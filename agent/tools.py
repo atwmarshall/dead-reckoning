@@ -155,8 +155,15 @@ def _format(doc: dict) -> str:
 @traceable(name="hybrid_search", run_type="retriever", process_outputs=_clean)
 def _do_hybrid_search(query: str) -> list[str]:
     vec = _embedder.embed_query(query)
-    terms = [t for t in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]+", query)
-             if t.lower() not in _STOP_WORDS and len(t) > 2]
+    raw_terms = [t for t in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]+", query)
+                 if t.lower() not in _STOP_WORDS and len(t) > 2]
+    # Split camelCase/PascalCase identifiers so "DigestAuth" → ["Digest", "Auth"]
+    expanded = []
+    for t in raw_terms:
+        parts = [p for p in re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', t)
+                 if len(p) > 2 and p.lower() not in _STOP_WORDS]
+        expanded.extend(parts if parts else [t])
+    terms = expanded or raw_terms
     keyword = max(terms, key=len) if terms else query.split()[0]
 
     rows = asyncio.run(_query_raw(
