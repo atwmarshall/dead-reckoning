@@ -28,7 +28,7 @@ ollama pull nomic-embed-text
 ### 2. Verify SurrealDB connection
 
 ```bash
-# Quick connection test — should return empty array, not an error
+# Quick connection test — should return a count or empty array, not an error
 uv run python -c "
 import asyncio, os
 from dotenv import load_dotenv
@@ -88,7 +88,7 @@ uv run streamlit run ui/app.py
 
 Have these ready to copy-paste during the demo. Open a second terminal window.
 
-**Query 1 — Hybrid search (RRF fusion inside SurrealDB):**
+**Query 1 — Hybrid search on httpx (RRF fusion inside SurrealDB):**
 ```bash
 uv run python -c "
 import asyncio, os
@@ -130,7 +130,7 @@ asyncio.run(rrf_demo())
 "
 ```
 
-**Query 2 — Multi-hop graph traversal (blast radius):**
+**Query 2 — Multi-hop graph traversal on httpx (blast radius):**
 ```bash
 uv run python -c "
 import asyncio, os
@@ -149,18 +149,20 @@ async def impact():
                <-calls<-function.name AS direct_callers,
                <-calls<-function<-calls<-function.name AS transitive_callers
         FROM function
-        WHERE name CONTAINS \"slugify\"
-    ')
-    print('--- Blast radius for slugify ---')
+        WHERE name CONTAINS \"_send\"
+    ''')
+    print('--- Blast radius for _send (httpx) ---')
     for r in (rows if isinstance(rows, list) else []):
-        print(f\"  {r.get('name')}: callers={r.get('direct_callers')}, transitive={r.get('transitive_callers')}\")
+        dc = r.get('direct_callers') or []
+        tc = r.get('transitive_callers') or []
+        print(f\"  {r.get('name')}: {len(dc)} direct callers, {len(tc)} transitive\")
     await db.close()
 
 asyncio.run(impact())
 "
 ```
 
-**Query 3 — Diff status from versioned graph:**
+**Query 3 — Diff status from versioned fixture graph:**
 ```bash
 uv run python -c "
 import asyncio, os
@@ -227,82 +229,68 @@ Say:
 
 ---
 
-**[0:15 — SURREALDB: run a live query in the terminal]**
+**[0:15 — QUERY HTTPX: agent on a real codebase]**
 
-*Switch to Terminal 2. Run the hybrid search query (Query 1 from scratch queries above).*
-
-Say:
-> "Let me show you what SurrealDB is doing under the hood. This is a single SurrealQL statement — it runs HNSW vector search AND BM25 keyword search, then fuses them with `search::rrf()` — reciprocal rank fusion — all inside the database. No application-side stitching."
-
-*Results appear — function names and file paths*
-
-Say:
-> "One database doing graph traversal, vector search, and full-text search. That's the foundation everything else is built on."
-
----
-
-**[0:35 — VERSIONED DIFF: ingest v2 live, show colours]**
-
-*Switch to Streamlit. In sidebar, select the v1 fixture. Then trigger v2 ingestion — click the quick-select for v2, click Ingest.*
-
-Say:
-> "Now watch what happens when code changes. Version one is already indexed — let's ingest version two."
-
-*Conflict dialog appears: "A previous version exists"*
-
-Say:
-> "It detects the previous version automatically."
-
-*Click "Add new version" — graph updates — nodes turn green, yellow, red*
-
-Say:
-> "Green: unchanged. Yellow: modified. Red: deleted. Not just files — individual functions get their own diff status. The knowledge graph is now version-aware."
-
----
-
-**[0:55 — SURREALDB PROOF: show diff data in terminal]**
-
-*Switch to Terminal 2. Run the diff status query (Query 3 from scratch queries).*
-
-Say:
-> "Here's the raw SurrealDB data — every file node has a `diff_status` field, and we traverse `->contains->function` edges to see which functions changed inside each file. Graph traversal AND version tracking in one query."
-
----
-
-**[1:05 — AGENT: multi-tool reasoning chain]**
-
-*Switch to Streamlit "Ask the Codebase" tab. Type:*
+*Switch to "Ask the Codebase" tab (httpx still selected). Type:*
 ```
-what changed between versions and what might be affected?
+which functions handle authentication and what depends on them?
 ```
 
 Say (while agent responds):
-> "The agent has four tools. Watch — it's going to chain two together. First `version_diff` reads the diff status from every node. Then it chains into `trace_impact` — that's a multi-hop graph traversal: what calls this function, and what calls *that*. Two hops through the calls graph in a single SurrealQL query."
+> "This is the agent running against the real httpx codebase — not a toy example. It's going to use hybrid search first — SurrealDB's `search::rrf()` fuses vector similarity and BM25 keyword matching in one query inside the database. Then it chains into trace_impact — a multi-hop graph traversal to find everything that depends on those auth functions."
 
-*Point at tool calls appearing in the response*
+*Results appear — real httpx function names, real file paths, real callers*
 
 Say:
-> "That chain wasn't scripted — the LLM decided to assess the blast radius after seeing the diff. That's LangGraph conditional routing."
+> "Real functions, real call chains, real impact analysis. This is structural reasoning — 'what calls X, and what calls that' — which context windows can't do. You need the graph."
 
 ---
 
-**[1:25 — LANGSMITH: show the trace]**
+**[0:45 — VERSIONED DIFF: switch to fixtures, ingest v2 live]**
+
+*In sidebar, switch to the v1 fixture. Then trigger v2 ingestion — click the quick-select for v2, click Ingest.*
+
+Say:
+> "Now watch what happens when code changes. Here's a smaller repo — version one is indexed, let's ingest version two."
+
+*Conflict dialog appears: "A previous version exists"*
+
+> "It detects the previous version automatically."
+
+*Click "Add new version" — ingestion runs — pipeline pauses at diff review (interrupt)*
+
+Say:
+> "The ingestion pipeline just paused. It's a LangGraph interrupt — the agent checkpointed its state to SurrealDB and is waiting for us to review the diff before continuing. This is resumable — we could kill the process, come back tomorrow, and it picks up right here."
+
+*Click continue/resume — graph updates — nodes turn green, yellow, red, blue*
+
+Say:
+> "Green: unchanged. Yellow: modified. Red: deleted. Blue: new. Not just files — individual functions are diff'd. The knowledge graph is now version-aware."
+
+---
+
+**[1:05 — AGENT: automated code review chain]**
+
+*Switch to "Ask the Codebase" tab. Type:*
+```
+What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.
+```
+
+Say (while agent responds):
+> "Watch the agent chain three tools. First version_diff — reads diff_status from the knowledge graph, spots new files and flags undocumented functions. Then generate_docstring — reads the function source from SurrealDB, sends it to the LLM for a docstring. Then raise_issue — files a GitHub issue with the suggestion. Three tools, one query. The agent decided the chain — LangGraph conditional routing."
+
+*Point at tool calls in the response — version_diff → generate_docstring → raise_issue. Show the GitHub issue URL.*
+
+---
+
+**[1:30 — LANGSMITH: show the trace]**
 
 *Switch to LangSmith tab — find the trace for the query*
 
 Say:
-> "Every step is observable. Here's the LangGraph run — you can see the LLM reasoning, then version_diff fires, then trace_impact. Tool calls, arguments, results — fully auditable."
+> "Every step is observable. LangGraph run — LLM reasoning, version_diff fires, generate_docstring chains in, raise_issue follows. Three tool calls, arguments, results — fully auditable in LangSmith."
 
-*Point at the tool call sequence in the trace tree*
-
----
-
-**[1:35 — PERSISTENT STATE: interrupt and resume]**
-
-*Point at the ingestion traces from seed setup (the httpx run should show in LangSmith). Or if time allows, describe the mechanism.*
-
-Say:
-> "The ingestion pipeline checkpoints after every single file — into SurrealDB. Kill the agent mid-run, restart with the same thread ID, it resumes from exactly where it stopped. Same database storing the graph, the vectors, AND the agent state."
+*Point at the 3-tool call sequence. If time, scroll to show the httpx query trace too — two separate multi-tool chains visible.*
 
 ---
 
@@ -311,7 +299,7 @@ Say:
 *Switch back to Streamlit — select httpx, show the full graph one more time*
 
 Say:
-> "One database, four jobs: knowledge graph with typed edges, HNSW vector search with BM25 fusion, version-aware diffing, and LangGraph checkpoint state. SurrealDB does all of it. LangGraph routes the agent through conditional tool chains. LangSmith traces every step. Dead Reckoning — navigate any codebase."
+> "One query: discovered a problem, generated a fix, filed an issue. SurrealDB stores the graph, vectors, diffs, and agent state. Dead Reckoning — navigate any codebase."
 
 ---
 
@@ -338,11 +326,24 @@ Say:
 - **Prompt to trigger (fixtures):** `"what would break if I changed slugify?"` or `"what depends on utils?"`
 
 ### version_diff
-- **What it does:** Summarises what changed between two ingested versions at file AND function granularity
-- **SurrealDB feature:** Auto-detects versions from the `ingestion` table, then reads `diff_status` from the versioned knowledge graph, traverses `->contains->function` edges to show per-function changes within each file
-- **Why it matters:** The graph is version-aware — not just "what exists" but "what changed" — and the agent can reason over the diff. Zero arguments needed — it figures out what to compare
+- **What it does:** Summarises what changed between two ingested versions at file AND function granularity, flags undocumented functions
+- **SurrealDB feature:** Auto-detects versions from the `ingestion` table, then reads `diff_status` from the versioned knowledge graph, traverses `->contains->function` edges to show per-function changes within each file. New files/functions show as "added" status
+- **Why it matters:** The graph is version-aware — not just "what exists" but "what changed" — and the agent can reason over the diff. Undocumented functions are flagged directly, giving the agent a natural signal to chain into `generate_docstring`
 - **LangSmith:** Shows ingestion table query + diff_status graph queries as nested spans
 - **Prompt to trigger:** `"what changed between versions?"` or `"show me the diff summary"`
+
+### generate_docstring
+- **What it does:** Generates a Python docstring for an undocumented function by reading its source from SurrealDB and sending it to the LLM
+- **SurrealDB feature:** Stores full function source text in the knowledge graph — the agent queries it directly without filesystem access
+- **Why it matters:** The agent discovers a problem (undocumented function via version_diff) and generates a fix — agentic code review
+- **LangSmith:** Shows SurrealDB query for source + LLM call as nested spans
+- **Prompt to trigger:** Chained automatically after version_diff flags undocumented functions
+
+### raise_issue
+- **What it does:** Creates a GitHub issue with the code improvement suggestion
+- **Why it matters:** Completes the agentic loop — discover problem → reason about it → take action. The agent files an issue without human intervention
+- **LangSmith:** Shows the `gh` CLI call as a tool span
+- **Prompt to trigger:** Chained automatically after generate_docstring
 
 ### list_versions
 - **What it does:** Shows all ingested repositories, their versions, file counts, timestamps, and snapshot status
@@ -352,25 +353,26 @@ Say:
 - **Prompt to trigger:** `"what repos are indexed?"` or `"what versions are available?"`
 
 ### Multi-tool chain (the demo moment)
-- The prompt `"what changed between versions and what might be affected?"` triggers **version_diff** first, then the agent chains into **trace_impact** on the modified items
-- This shows LangGraph's conditional tool routing: the agent reasons about the diff, then decides to assess the blast radius
-- Visible as a two-step tool call sequence in LangSmith
+- The prompt `"What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue."` triggers **version_diff** → **generate_docstring** → **raise_issue**
+- This shows LangGraph's conditional tool routing: the agent discovers a problem, generates a fix, and files an issue — all autonomously
+- Visible as a 3-step tool call sequence in LangSmith
 
 ---
 
 ## Pre-typed queries — scratch file, copy-paste during demo
 
 ```
-# After v1->v2 diff (fixtures)
-what changed between versions and what might be affected?
+# On httpx graph first (real-world, impressive)
+which functions handle authentication and what depends on them?
 
-# On httpx graph (impressive for judges)
-which functions handle authentication?
+# After switching to fixtures and ingesting v2 — the demo moment
+What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.
+
+# Backup queries if judges ask for more
 what would break if I changed _send?
 find the HTTP client logic and explain how requests flow
-
-# Show ingestion awareness (any graph)
 what repos have been indexed and how many versions?
+what changed between versions and what might be affected?
 ```
 
 ---
@@ -393,13 +395,16 @@ what repos have been indexed and how many versions?
 > "One instance doing four things: knowledge graph with typed edges, HNSW vector search with BM25 full-text via native `search::rrf()`, LangGraph checkpoint state, and ingestion history with version tracking. Graph traversal AND vector search AND relational queries in the same SurrealQL statement. No second database."
 
 **"What's LangGraph doing here?"**
-> "Two things. First, the query agent is a LangGraph StateGraph with conditional edges — the LLM decides which tools to call, and chains them together. version_diff into trace_impact is a two-step reasoning chain, not hardcoded. Second, the ingestion pipeline is a separate LangGraph graph with per-file checkpoints — kill it, resume it, same thread ID. Both use the SurrealDB checkpointer from the `langgraph-checkpoint-surrealdb` package."
+> "Two things. First, the query agent is a LangGraph StateGraph with conditional edges — the LLM decides which tools to call, and chains them together. version_diff into trace_impact is a two-step reasoning chain, not hardcoded. Second, the ingestion pipeline is a separate LangGraph graph with per-file checkpoints and a human-in-the-loop interrupt at diff review — kill it, resume it, same thread ID. Both use the SurrealDB checkpointer."
 
 **"What does LangSmith show?"**
 > "Every agent step is observable. Tool calls appear as nested spans — you can see the LLM reasoning, the SurrealQL queries, the graph traversals. The multi-tool chain (version_diff then trace_impact) is visible as a two-step sequence. Both the ingestion agent and query agent are fully traced. We use `@traceable` decorators on every retrieval function."
 
 **"What's search::rrf()?"**
 > "Reciprocal Rank Fusion. We run two searches — HNSW vector similarity for semantic meaning and BM25 for keyword matching — then SurrealDB's built-in `search::rrf()` function merges both ranked lists into one. The fusion happens inside the database in a single query, not in our Python code."
+
+**"How does the automated code review work?"**
+> "The agent chains three tools. version_diff reads the knowledge graph and flags new files and undocumented functions. generate_docstring queries SurrealDB for the function's source code — we store the full source text in the graph — and sends it to the LLM to generate a docstring. raise_issue calls the GitHub CLI to create an issue with the suggestion. One query triggers all three — the agent decides the chain via LangGraph conditional routing."
 
 **"Does it work on non-Python repos?"**
 > "Python only for the AST parsing — we used the built-in `ast` module. tree-sitter adds multi-language support; that's the obvious next step. The snapshot and diff layer works on any file type already."
@@ -413,25 +418,28 @@ what repos have been indexed and how many versions?
 
 | Demo moment | Criteria hit | Weight |
 |---|---|---|
-| Live SurrealQL query (RRF, graph traversal) | Structured Memory / Knowledge | 30% |
-| Green/yellow/red diff + `diff_status` query | Structured Memory / Knowledge | 30% |
-| Agent chains version_diff -> trace_impact | Agent Workflow Quality | 20% |
-| Checkpoint resume (mention + LangSmith proof) | Persistent Agent State | 20% |
-| v1 -> v2 versioned graph, ingestion records | Persistent Agent State | 20% |
-| Codebase navigation + impact analysis | Practical Use Case | 20% |
-| LangSmith trace walkthrough | Observability | 10% |
+| httpx graph + live agent query on real codebase | Practical Use Case | 20% |
+| RRF hybrid search + graph traversal on httpx | Structured Memory / Knowledge | 30% |
+| Green/yellow/red/blue diff + interrupt at diff review | Structured Memory / Knowledge | 30% |
+| Agent chains version_diff → generate_docstring → raise_issue (3-tool chain) | Agent Workflow Quality | 20% |
+| Agent chains hybrid_search → trace_impact on httpx | Agent Workflow Quality | 20% |
+| Interrupt/resume at diff review (live) | Persistent Agent State | 20% |
+| Per-file checkpointing + version ingestion records | Persistent Agent State | 20% |
+| LangSmith trace walkthrough (3-tool chain visible) | Observability | 10% |
 
-Every demo moment scores in at least one category. Nothing is filler.
+Every demo moment scores in at least one category. Nothing is filler. The 3-tool code review chain is the headline moment — discover, fix, file. Two separate agent query runs means two LangSmith traces to show.
 
 ---
 
 ## Timing failsafes
 
+**If the httpx agent query is slow (> 15s):** Say "the agent is reasoning now — let me show you what it's doing in LangSmith" and switch to LangSmith to show tool calls firing live. The wait becomes the observability demo.
+
 **If diff colouring is slow (> 5s):** Keep talking — "computing SHA-256 across both tar snapshots, comparing every file..." — it will arrive.
 
-**If the conflict dialog doesn't appear:** v1 ingestion_id not in session state. Refresh, re-ingest v1 quickly (fixture repo is fast), then ingest v2.
+**If the interrupt doesn't trigger (diff review):** The pipeline may skip straight through if there's no previous version detected. If this happens, don't stall — say "the pipeline checkpoints after every file into SurrealDB" and keep moving to the query.
 
-**If the agent query is slow (> 15s):** Switch to LangSmith immediately — "you can watch it reasoning right now" — point at tool calls firing. The wait becomes part of the demo.
+**If the conflict dialog doesn't appear:** v1 ingestion_id not in session state. Refresh, re-ingest v1 quickly (fixture repo is fast), then ingest v2.
 
 **If the SurrealQL terminal query fails:** Skip it, stay in the UI. The agent tool calls prove SurrealDB usage too. Don't debug live.
 
@@ -442,17 +450,28 @@ from agent.graph import build_query_agent
 agent = build_query_agent()
 config = {'configurable': {'thread_id': 'demo-fallback'}}
 r = agent.invoke({
-    'messages': [('user', 'what changed between versions and what might be affected?')],
+    'messages': [('user', 'What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.')],
 }, config)
 print(r['messages'][-1].content)
 "
 ```
 
-**If you have under 90 seconds:** Do: httpx graph (pan, "hundreds of nodes, real repo") -> v2 ingest live (green/yellow/red) -> agent query ("what changed and what might break?") -> close with "one database, four jobs". Skip terminal queries and LangSmith.
+**If you have under 90 seconds:** Do: httpx graph (pan, "real repo, hundreds of nodes") -> ask "which functions handle authentication and what depends on them?" -> while waiting, switch to fixtures, ingest v2 (green/yellow/red) -> close with "one database, four jobs". Skip LangSmith and terminal queries.
 
 **The three things that must not fail:**
-1. httpx graph rendering — impressive node count, visible call edges
-2. Green/yellow/red colouring on the v1->v2 fixture diff
-3. Agent multi-tool chain on "what changed and what might be affected?"
+1. httpx graph rendering + agent query against it — proves real-world use case
+2. Green/yellow/red/blue colouring on the v1->v2 fixture diff
+3. Agent 3-tool chain: version_diff → generate_docstring → raise_issue
 
 Rehearse all flows until they work perfectly every single time before Sunday morning.
+
+---
+
+## OSS Contribution (mention during Q&A or close)
+
+We found and fixed a bug in `langgraph-checkpoint-surrealdb` — the `setup()` method was a no-op that never created the checkpoint/write tables, causing a cryptic `string indices must be integers` error. PR is open:
+
+https://github.com/lfnovo/langgraph-checkpoint-surrealdb/pull/2
+
+Say (if judges ask about contributions, or drop it in the close):
+> "We also found a bug in the SurrealDB checkpointer package and opened a fix — setup() wasn't creating the tables, so first-time users hit a cryptic error. The PR is up."

@@ -22,6 +22,12 @@ def parse_file(path: str) -> dict:
             segment = "\n".join(source_lines[node.lineno - 1:node.end_lineno])
         return hashlib.sha256(segment.encode()).hexdigest()
 
+    def _source_text(node):
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            segment = "\n".join(source_lines[node.lineno - 1:node.end_lineno])
+        return segment
+
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             functions.append({
@@ -31,6 +37,7 @@ def parse_file(path: str) -> dict:
                 "class_name": None,
                 "calls": _extract_calls(node),
                 "source_hash": _source_hash(node),
+                "source": _source_text(node),
             })
 
         elif isinstance(node, ast.ClassDef):
@@ -54,6 +61,7 @@ def parse_file(path: str) -> dict:
                         "class_name": node.name,
                         "calls": _extract_calls(child),
                         "source_hash": _source_hash(child),
+                        "source": _source_text(child),
                     })
 
     for node in ast.walk(tree):

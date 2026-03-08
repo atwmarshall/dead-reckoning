@@ -132,14 +132,15 @@ class DiffEngine:
         prev_ingestion_id: str,
         db,
         new_snapshot_path: Path | None = None,
+        new_ingestion_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Async generator yielding diff events for each file and function.
 
-        Each event: {"node_id": str, "status": "green"|"yellow"|"red", "path": str}
+        Each event: {"node_id": str, "status": "green"|"yellow"|"red"|"added", "path": str}
           green  = unchanged
           yellow = modified
           red    = deleted (in prev, not in new)
-        New files (not in prev) are not yielded.
+          added  = new file/function (in new, not in prev)
 
         Uses tar snapshot comparison when snapshots are available, falling back
         to DB hash comparison otherwise.
@@ -269,3 +270,40 @@ class DiffEngine:
             )
             for fn_ev in fn_events:
                 yield fn_ev
+
+        # --- "Added" pass: mark new files/functions not present in previous version ---
+        if new_ingestion_id:
+            prev_file_rows = _get_rows(await db.query(
+                "SELECT path FROM file WHERE ingestion_id = $iid",
+                {"iid": prev_ingestion_id},
+            ))
+            prev_paths = {r["path"] for r in prev_file_rows}
+
+            new_file_rows = _get_rows(await db.query(
+                "SELECT id, path FROM file WHERE ingestion_id = $iid",
+                {"iid": new_ingestion_id},
+            ))
+
+            for nf in new_file_rows:
+                if nf["path"] not in prev_paths:
+                    nf_nid = str(nf["id"])
+                    rid = nf_nid.split(":", 1)[1] if ":" in nf_nid else nf_nid
+                    await db.query(
+                        "UPDATE type::record('file', $rid) SET diff_status = $s",
+                        {"rid": rid, "s": "added"},
+                    )
+                    yield {"node_id": nf_nid, "status": "added", "path": nf["path"]}
+
+                    # Mark all functions in this new file as "added"
+                    new_fns = _get_rows(await db.query(
+                        "SELECT id, name FROM `function` WHERE ingestion_id = $iid AND file = type::record('file', $frid)",
+                        {"iid": new_ingestion_id, "frid": rid},
+                    ))
+                    for fn in new_fns:
+                        fn_nid = str(fn["id"])
+                        fn_rid = fn_nid.split(":", 1)[1] if ":" in fn_nid else fn_nid
+                        await db.query(
+                            "UPDATE type::record('function', $rid) SET diff_status = $s",
+                            {"rid": fn_rid, "s": "added"},
+                        )
+                        yield {"node_id": fn_nid, "status": "added", "name": fn.get("name", "")}

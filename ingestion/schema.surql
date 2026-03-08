@@ -53,6 +53,7 @@ DEFINE FIELD IF NOT EXISTS embedding      ON `function` TYPE option<array>;
 DEFINE FIELD IF NOT EXISTS ingestion_id   ON `function` TYPE string;
 DEFINE FIELD IF NOT EXISTS content_hash   ON `function` TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS diff_status    ON `function` TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS source         ON `function` TYPE option<string>;
 
 REMOVE INDEX IF EXISTS fn_name_file_class_idx ON TABLE `function`;
 DEFINE INDEX fn_name_file_class_iid_idx ON `function` FIELDS name, file, class_name, ingestion_id UNIQUE;

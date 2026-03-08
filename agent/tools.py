@@ -1,7 +1,9 @@
 import asyncio
 import os
 import re
+import subprocess
 
+import ollama as ollama_client
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_ollama import OllamaEmbeddings
@@ -302,7 +304,7 @@ def version_diff(module: str = "") -> str:
     fn_condition = "AND file.path CONTAINS $module" if module else ""
     fn_rows = _get_rows(asyncio.run(_query(
         f"""
-        SELECT name, diff_status, file.path AS path
+        SELECT name, diff_status, file.path AS path, has_docstring
         FROM `function`
         WHERE diff_status IS NOT NONE {fn_condition}
         ORDER BY diff_status
@@ -313,23 +315,30 @@ def version_diff(module: str = "") -> str:
     if not file_rows and not fn_rows:
         return version_header + "No version diff data found. Ingest two versions to see what changed."
 
-    files_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": []}
+    files_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": [], "added": []}
     for row in file_rows:
         s = row.get("diff_status", "")
         if s in files_by_status:
             files_by_status[s].append(row.get("path", "?"))
 
-    fns_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": []}
+    fns_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": [], "added": []}
     for row in fn_rows:
         s = row.get("diff_status", "")
         if s in fns_by_status:
-            fns_by_status[s].append(f"{row.get('name', '?')} in {row.get('path', '?')}")
+            label = f"{row.get('name', '?')} in {row.get('path', '?')}"
+            if row.get("has_docstring") is False:
+                label += " (undocumented)"
+            fns_by_status[s].append(label)
 
     lines = []
     if version_header:
         lines.append(version_header.rstrip())
     lines.extend(["Version Diff Summary", "=" * 40])
 
+    if files_by_status["added"]:
+        lines.append(f"\nNEW files ({len(files_by_status['added'])}):")
+        for p in files_by_status["added"]:
+            lines.append(f"  + {p}")
     if files_by_status["red"]:
         lines.append(f"\nDELETED files ({len(files_by_status['red'])}):")
         for p in files_by_status["red"]:
@@ -343,6 +352,10 @@ def version_diff(module: str = "") -> str:
         for p in files_by_status["green"]:
             lines.append(f"  . {p}")
 
+    if fns_by_status["added"]:
+        lines.append(f"\nNEW functions ({len(fns_by_status['added'])}):")
+        for f in fns_by_status["added"]:
+            lines.append(f"  + {f}")
     if fns_by_status["red"]:
         lines.append(f"\nDELETED functions ({len(fns_by_status['red'])}):")
         for f in fns_by_status["red"]:
@@ -353,8 +366,8 @@ def version_diff(module: str = "") -> str:
             lines.append(f"  ~ {f}")
 
     total = sum(len(v) for v in files_by_status.values())
-    changed = len(files_by_status["yellow"]) + len(files_by_status["red"])
-    lines.append(f"\nTotal: {total} files tracked, {changed} changed or deleted")
+    changed = len(files_by_status["yellow"]) + len(files_by_status["red"]) + len(files_by_status["added"])
+    lines.append(f"\nTotal: {total} files tracked, {changed} changed, added, or deleted")
 
     return "\n".join(lines)
 
@@ -403,3 +416,83 @@ def list_versions(repo_filter: str = "") -> str:
 
     lines.append(f"\nTotal: {len(rows)} version(s)")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 5: generate_docstring — LLM-generated docstring for undocumented functions
+# ---------------------------------------------------------------------------
+
+@tool
+@traceable(name="generate_docstring", run_type="chain")
+def generate_docstring(function_name: str, file_path: str = "") -> str:
+    """Generate a Python docstring for an undocumented function.
+    Pass the function name (and optionally file path to disambiguate).
+    Use when version_diff reports an undocumented function."""
+    condition = "WHERE name = $name AND has_docstring = false"
+    params: dict = {"name": function_name}
+    if file_path:
+        condition += " AND file.path CONTAINS $fp"
+        params["fp"] = file_path
+
+    rows = _get_rows(asyncio.run(_query(
+        f"SELECT name, source, file.path AS path FROM `function` {condition}",
+        params,
+    )))
+
+    if not rows:
+        return f"No undocumented function named '{function_name}' found."
+
+    fn = rows[0]
+    source = fn.get("source")
+    if not source:
+        return f"Function '{function_name}' has no source text stored. Re-ingest to populate."
+
+    path = fn.get("path", "?")
+    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+    client = ollama_client.Client(host=base_url)
+    response = client.chat(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": (
+                "Generate a concise Python docstring for this function. "
+                "Return ONLY the docstring text (no triple quotes, no code).\n\n"
+                f"{source}"
+            ),
+        }],
+    )
+    docstring = response.message.content.strip()
+
+    return (
+        f"Generated docstring for {function_name} ({path}):\n\n"
+        f'    """{docstring}"""\n'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 6: raise_issue — create a GitHub issue with a code improvement suggestion
+# ---------------------------------------------------------------------------
+
+@tool
+@traceable(name="raise_issue", run_type="tool")
+def raise_issue(title: str, body: str) -> str:
+    """Create a GitHub issue with a code improvement suggestion.
+    Pass a title and markdown body. Use after generate_docstring to file the suggestion."""
+    repo = os.getenv("GITHUB_REPO", "archiemarshall/dead-reckoning")
+
+    result = subprocess.run(
+        ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "auth" in stderr.lower() or "login" in stderr.lower():
+            return "Error: GitHub CLI is not authenticated. Run 'gh auth login' first."
+        return f"Error creating issue: {stderr}"
+
+    url = result.stdout.strip()
+    return f"GitHub issue created: {url}"

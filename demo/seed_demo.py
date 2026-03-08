@@ -128,7 +128,7 @@ async def ingest_version(
     return ingestion_id
 
 
-async def compute_diff(repo_path: Path, prev_ingestion_id: str, new_snapshot_id: str) -> int:
+async def compute_diff(repo_path: Path, prev_ingestion_id: str, new_snapshot_id: str, new_ingestion_id: str | None = None) -> int:
     """Run diff between previous ingestion and new snapshot. Returns event count."""
     from ingestion.snapshot import SNAPSHOT_DIR
 
@@ -140,9 +140,10 @@ async def compute_diff(repo_path: Path, prev_ingestion_id: str, new_snapshot_id:
         async for event in DiffEngine.run(
             repo_str, prev_ingestion_id, db,
             new_snapshot_path=new_snap,
+            new_ingestion_id=new_ingestion_id,
         ):
             status = event["status"].upper()
-            name = Path(event.get("path", "?")).name
+            name = Path(event.get("path", "?")).name if event.get("path") else event.get("name", "?")
             print(f"  {status}: {name}")
             count += 1
 
@@ -230,7 +231,7 @@ async def main(args) -> None:
 
         v2_bare = v2_id.split(":", 1)[1] if ":" in v2_id else v2_id
         print(f"\nStep 4: Computing diff (v1 → v2)...")
-        diff_count = await compute_diff(V1_PATH, v1_id, v2_bare)
+        diff_count = await compute_diff(V1_PATH, v1_id, v2_bare, new_ingestion_id=v2_id)
         print(f"  {diff_count} diff events")
     else:
         print("\n  (v2 skipped — ingest v2 live through the UI during the demo)")
@@ -251,7 +252,7 @@ async def main(args) -> None:
             f"\nNext steps:\n"
             f"  1. uv run streamlit run ui/app.py\n"
             f"  2. In the UI, ingest v2 ({V2_PATH}) to trigger live diff\n"
-            f"  3. Ask: 'what changed between versions and what might be affected?'"
+            f"  3. Ask: 'What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.'"
         )
 
 

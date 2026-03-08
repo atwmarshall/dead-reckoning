@@ -27,7 +27,6 @@ def handle_create_item(store: list[dict], payload: dict) -> dict:
 
 
 def handle_delete_item(store: list[dict], item_id: int) -> bool:
-    """Remove an item by ID. Returns True if found and deleted."""
     for i, item in enumerate(store):
         if item.get("id") == item_id:
             store.pop(i)

@@ -46,6 +46,7 @@ DIFF_COLORS = {
     "green":  "#43A047",   # material green-700  — unchanged
     "yellow": "#FDD835",   # pure yellow-600     — modified
     "red":    "#E53935",   # material red-600    — deleted
+    "added":  "#1E88E5",   # material blue-600   — new
 }
 DIFF_MUTED = "#AAAAAA"   # neutral gray for non-file nodes in diff mode
 
@@ -158,7 +159,9 @@ def _run_ingestion(
             async def _run_diff():
                 async with get_db_client() as db:
                     async for event in DiffEngine.run(
-                        disk_path, prev_ingestion_id, db, new_snapshot_path=new_snapshot_path
+                        disk_path, prev_ingestion_id, db,
+                        new_snapshot_path=new_snapshot_path,
+                        new_ingestion_id=ingestion_id,
                     ):
                         diff_highlights[event["node_id"]] = event["status"]
                         name = Path(event.get("path", "?")).name if event.get("path") else event.get("name", "?")
@@ -1409,6 +1412,8 @@ if _is_diff_legend:
         f'<span style="color:{DIFF_COLORS["yellow"]}">&#11044;</span> Modified</span>'
         f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
         f'<span style="color:{DIFF_COLORS["red"]}">&#11044;</span> Deleted</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="color:{DIFF_COLORS["added"]}">&#11044;</span> Added</span>'
         f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
         f'<span style="color:{DIFF_MUTED}">&#11044;</span> Other nodes (muted)</span>'
         '</div>',

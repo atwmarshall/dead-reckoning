@@ -299,7 +299,8 @@ async def load_file(
                lineno = $lineno, docstring = $docstring,
                has_docstring = $has_docstring, class_name = $class_name,
                is_method = $is_method, embedding = $embedding,
-               ingestion_id = $iid, content_hash = $ch""",
+               ingestion_id = $iid, content_hash = $ch,
+               source = $source""",
             {
                 "id": fnid,
                 "name": fn["name"],
@@ -312,6 +313,7 @@ async def load_file(
                 "embedding": embeddings_map.get(idx),
                 "iid": ingestion_id,
                 "ch": fn.get("source_hash"),
+                "source": fn.get("source"),
             },
         )
         eid = _edge_id(fid, "contains", fnid)
