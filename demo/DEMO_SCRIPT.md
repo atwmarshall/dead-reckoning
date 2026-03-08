@@ -53,13 +53,10 @@ uv run python demo/seed_demo.py --with-v2
 uv run pytest tests/test_tools.py -v
 
 # Sunday morning — set up for the live demo
-# Step 1: Reset + ingest httpx (the "wow" graph)
-uv run python demo/seed_demo.py --httpx
+# One command: reset DB, ingest v1 fixtures only. Fast, clean, no conflicts.
+uv run python demo/seed_demo.py
 
-# Step 2: Add v1 fixture ON TOP (--no-reset keeps httpx data intact)
-uv run python demo/seed_demo.py --no-reset
-
-# Step 3: Verify counts
+# Verify counts (should see 4 files, ~10 functions, 1 ingestion)
 uv run python -c "
 import asyncio, os
 from dotenv import load_dotenv
@@ -77,6 +74,12 @@ async def counts():
 asyncio.run(counts())
 "
 ```
+
+> **Note:** httpx ingestion is impressive but slow and creates conflicts with
+> fixture data (v2 ingestion wipes httpx counts). For the live demo, start
+> with v1 fixtures only — they're fast and sufficient. Ingest httpx via the
+> UI live if you want the "wow" graph, or pre-ingest it separately for a
+> static background graph that you don't modify during the demo.
 
 ### 4. Start the app
 
@@ -212,7 +215,7 @@ asyncio.run(diff())
 ### 6. Tabs to have open
 
 ```
-Browser tab 1: Streamlit app (localhost:8501) — Knowledge Graph tab, httpx selected
+Browser tab 1: Streamlit app (localhost:8501) — Knowledge Graph tab, v1 fixture selected
 Browser tab 2: LangSmith (smith.langchain.com) — dead-reckoning project, recent traces
 Terminal 1:    Streamlit running
 Terminal 2:    Ready for SurrealQL demo queries (scratch queries above)
@@ -220,11 +223,11 @@ Terminal 2:    Ready for SurrealQL demo queries (scratch queries above)
 
 ### State before judges arrive
 
-- httpx fully ingested — graph shows hundreds of nodes and edges
-- v1 sample fixture also ingested — ready for the diff moment later
-- v2 sample fixture NOT yet ingested — waiting to trigger live
+- v1 sample fixture ingested — graph shows files, functions, classes, call edges
+- v2 sample fixture NOT yet ingested — waiting to trigger live for the diff moment
 - LangSmith has traces from seed runs visible
 - SurrealQL scratch queries tested and working
+- Docstring enrichment NOT run yet — will demo via the UI "Suggest Docstrings" button
 
 ---
 
@@ -232,9 +235,9 @@ Terminal 2:    Ready for SurrealQL demo queries (scratch queries above)
 
 ---
 
-**[0:00 — OPEN: problem + httpx graph]**
+**[0:00 — OPEN: problem + v1 graph]**
 
-*Show graph tab — httpx fully indexed, hundreds of nodes. Pan slowly so judges can see the density.*
+*Show graph tab — v1 fixture indexed, files/functions/classes visible with call edges.*
 
 Say:
 > "Every developer knows this moment — new codebase, no idea what talks to what. Dead Reckoning turns any Python repo into a queryable knowledge graph."
@@ -242,33 +245,33 @@ Say:
 *Point at nodes and edges*
 
 Say:
-> "This is encode/httpx — a real Python HTTP library. We pointed our agent at the GitHub URL and it parsed every file into a SurrealDB knowledge graph. Files, functions, classes, call relationships — all stored as nodes and edges."
+> "We pointed our agent at a Python repo and it parsed every file into a SurrealDB knowledge graph. Files, functions, classes, call relationships — all stored as nodes and edges."
 
 ---
 
-**[0:15 — QUERY HTTPX: agent on a real codebase]**
+**[0:10 — QUERY: agent on the codebase]**
 
-*Switch to "Ask the Codebase" tab (httpx still selected). Type:*
+*Switch to "Ask the Codebase" tab. Type:*
 ```
-which functions handle authentication and what depends on them?
+find the slugify function and what depends on it
 ```
 
 Say (while agent responds):
-> "This is the agent running against the real httpx codebase — not a toy example. It's going to use hybrid search first — SurrealDB's `search::rrf()` fuses vector similarity and BM25 keyword matching in one query inside the database. Then it chains into trace_impact — a multi-hop graph traversal to find everything that depends on those auth functions."
+> "The agent uses hybrid search — SurrealDB's `search::rrf()` fuses vector similarity and BM25 keyword matching in one query inside the database. Then it chains into trace_impact — a multi-hop graph traversal to find everything that depends on that function."
 
-*Results appear — real httpx function names, real file paths, real callers*
+*Results appear — function names, file paths, callers*
 
 Say:
 > "Real functions, real call chains, real impact analysis. This is structural reasoning — 'what calls X, and what calls that' — which context windows can't do. You need the graph."
 
 ---
 
-**[0:45 — VERSIONED DIFF: switch to fixtures, ingest v2 live]**
+**[0:30 — VERSIONED DIFF: ingest v2 live]**
 
-*In sidebar, switch to the v1 fixture. Then trigger v2 ingestion — click the quick-select for v2, click Ingest.*
+*Trigger v2 ingestion — click the quick-select for v2, click Ingest.*
 
 Say:
-> "Now watch what happens when code changes. Here's a smaller repo — version one is indexed, let's ingest version two."
+> "Now watch what happens when code changes. Version one is indexed, let's ingest version two."
 
 *Conflict dialog appears: "A previous version exists"*
 
@@ -279,14 +282,14 @@ Say:
 Say:
 > "The ingestion pipeline just paused. It's a LangGraph interrupt — the agent checkpointed its state to SurrealDB and is waiting for us to review the diff before continuing. This is resumable — we could kill the process, come back tomorrow, and it picks up right here."
 
-*Click continue/resume — graph updates — nodes turn green, yellow, red, blue*
+*Click Resume — graph updates — nodes turn green, yellow, red, blue*
 
 Say:
 > "Green: unchanged. Yellow: modified. Red: deleted. Blue: new. Not just files — individual functions are diff'd. The knowledge graph is now version-aware."
 
 ---
 
-**[1:05 — AGENT: automated code review chain]**
+**[0:55 — AGENT: automated code review chain]**
 
 *Switch to "Ask the Codebase" tab. Type:*
 ```
@@ -300,20 +303,20 @@ Say (while agent responds):
 
 ---
 
-**[1:30 — LANGSMITH: show the trace]**
+**[1:20 — LANGSMITH: show the trace]**
 
 *Switch to LangSmith tab — find the trace for the query*
 
 Say:
 > "Every step is observable. LangGraph run — LLM reasoning, version_diff fires, generate_docstring chains in, raise_issue follows. Three tool calls, arguments, results — fully auditable in LangSmith."
 
-*Point at the 3-tool call sequence. If time, scroll to show the httpx query trace too — two separate multi-tool chains visible.*
+*Point at the 3-tool call sequence.*
 
 ---
 
-**[1:45 — CLOSE: back to httpx graph + summary]**
+**[1:40 — CLOSE: summary]**
 
-*Switch back to Streamlit — select httpx, show the full graph one more time*
+*Switch back to Streamlit — show the diff-coloured graph one more time*
 
 Say:
 > "One query: discovered a problem, generated a fix, filed an issue. SurrealDB stores the graph, vectors, diffs, and agent state. Dead Reckoning — navigate any codebase."
@@ -379,15 +382,14 @@ Say:
 ## Pre-typed queries — scratch file, copy-paste during demo
 
 ```
-# On httpx graph first (real-world, impressive)
-which functions handle authentication and what depends on them?
+# Before v2 ingestion — query the v1 graph
+find the slugify function and what depends on it
 
-# After switching to fixtures and ingesting v2 — the demo moment
+# After ingesting v2 — the demo moment
 What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.
 
 # Backup queries if judges ask for more
-what would break if I changed _send?
-find the HTTP client logic and explain how requests flow
+what would break if I changed slugify?
 what repos have been indexed and how many versions?
 what changed between versions and what might be affected?
 ```
@@ -435,11 +437,11 @@ what changed between versions and what might be affected?
 
 | Demo moment | Criteria hit | Weight |
 |---|---|---|
-| httpx graph + live agent query on real codebase | Practical Use Case | 20% |
-| RRF hybrid search + graph traversal on httpx | Structured Memory / Knowledge | 30% |
+| v1 graph + live agent query (hybrid search + trace_impact) | Practical Use Case | 20% |
+| RRF hybrid search + graph traversal | Structured Memory / Knowledge | 30% |
 | Green/yellow/red/blue diff + interrupt at diff review | Structured Memory / Knowledge | 30% |
 | Agent chains version_diff → generate_docstring → raise_issue (3-tool chain) | Agent Workflow Quality | 20% |
-| Agent chains hybrid_search → trace_impact on httpx | Agent Workflow Quality | 20% |
+| Agent chains hybrid_search → trace_impact | Agent Workflow Quality | 20% |
 | Interrupt/resume at diff review (live) | Persistent Agent State | 20% |
 | Per-file checkpointing + version ingestion records | Persistent Agent State | 20% |
 | LangSmith trace walkthrough (3-tool chain visible) | Observability | 10% |
@@ -450,7 +452,7 @@ Every demo moment scores in at least one category. Nothing is filler. The 3-tool
 
 ## Timing failsafes
 
-**If the httpx agent query is slow (> 15s):** Say "the agent is reasoning now — let me show you what it's doing in LangSmith" and switch to LangSmith to show tool calls firing live. The wait becomes the observability demo.
+**If the agent query is slow (> 15s):** Say "the agent is reasoning now — let me show you what it's doing in LangSmith" and switch to LangSmith to show tool calls firing live. The wait becomes the observability demo.
 
 **If diff colouring is slow (> 5s):** Keep talking — "computing SHA-256 across both tar snapshots, comparing every file..." — it will arrive.
 
@@ -473,11 +475,11 @@ print(r['messages'][-1].content)
 "
 ```
 
-**If you have under 90 seconds:** Do: httpx graph (pan, "real repo, hundreds of nodes") -> ask "which functions handle authentication and what depends on them?" -> while waiting, switch to fixtures, ingest v2 (green/yellow/red) -> close with "one database, four jobs". Skip LangSmith and terminal queries.
+**If you have under 90 seconds:** Do: show v1 graph -> ask "find slugify and what depends on it" -> while waiting, ingest v2 (green/yellow/red) -> close with "one database, four jobs". Skip LangSmith and terminal queries.
 
 **The three things that must not fail:**
-1. httpx graph rendering + agent query against it — proves real-world use case
-2. Green/yellow/red/blue colouring on the v1->v2 fixture diff
+1. v1 graph rendering + agent query against it
+2. Green/yellow/red/blue colouring on the v1→v2 fixture diff
 3. Agent 3-tool chain: version_diff → generate_docstring → raise_issue
 
 Rehearse all flows until they work perfectly every single time before Sunday morning.
