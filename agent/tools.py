@@ -428,7 +428,7 @@ def generate_docstring(function_name: str, file_path: str = "") -> str:
     """Generate a Python docstring for an undocumented function.
     Pass the function name (and optionally file path to disambiguate).
     Use when version_diff reports an undocumented function."""
-    condition = "WHERE name = $name AND has_docstring = false"
+    condition = "WHERE name CONTAINS $name AND has_docstring = false"
     params: dict = {"name": function_name}
     if file_path:
         condition += " AND file.path CONTAINS $fp"
