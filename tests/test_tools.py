@@ -139,6 +139,34 @@ class TestVersionDiff:
 
 
 # ---------------------------------------------------------------------------
+# list_versions
+# ---------------------------------------------------------------------------
+
+class TestListVersions:
+    def test_returns_string(self):
+        from agent.tools import list_versions
+        result = list_versions.invoke({"repo_filter": ""})
+        assert isinstance(result, str)
+
+    def test_shows_ingested_versions(self):
+        from agent.tools import list_versions
+        result = list_versions.invoke({"repo_filter": ""})
+        assert "Ingested Versions" in result or "No ingested versions" in result
+
+    def test_shows_version_count(self):
+        from agent.tools import list_versions
+        result = list_versions.invoke({"repo_filter": ""})
+        if "No ingested versions" not in result:
+            assert "Total:" in result
+            assert "version(s)" in result
+
+    def test_filter_by_repo(self):
+        from agent.tools import list_versions
+        result = list_versions.invoke({"repo_filter": "nonexistent_repo_xyz_999"})
+        assert "No ingested versions" in result
+
+
+# ---------------------------------------------------------------------------
 # Agent wiring
 # ---------------------------------------------------------------------------
 
@@ -149,12 +177,14 @@ class TestAgentWiring:
         assert "hybrid_search" in names
         assert "trace_impact" in names
         assert "version_diff" in names
+        assert "list_versions" in names
 
     def test_system_prompt_mentions_all_tools(self):
         from agent.graph import SYSTEM_PROMPT
         assert "hybrid_search" in SYSTEM_PROMPT
         assert "trace_impact" in SYSTEM_PROMPT
         assert "version_diff" in SYSTEM_PROMPT
+        assert "list_versions" in SYSTEM_PROMPT
 
     def test_agent_builds(self):
         from agent.graph import build_query_agent

@@ -357,3 +357,49 @@ def version_diff(module: str = "") -> str:
     lines.append(f"\nTotal: {total} files tracked, {changed} changed or deleted")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 4: list_versions — show ingestion history from SurrealDB
+# ---------------------------------------------------------------------------
+
+@tool
+@traceable(name="list_versions", run_type="retriever", process_outputs=_clean)
+def list_versions(repo_filter: str = "") -> str:
+    """List all ingested versions (repositories and their ingestion history).
+    Call with no arguments to see everything, or pass a repo name to filter.
+    Use when asked what repos are indexed, what versions exist, or ingestion history."""
+    condition = "WHERE repo_name CONTAINS $repo" if repo_filter else ""
+    rows = _get_rows(asyncio.run(_query(
+        f"""
+        SELECT repo_path, repo_name, github_url, ingested_at,
+               status, file_count, snapshot_path
+        FROM ingestion
+        {condition}
+        ORDER BY ingested_at DESC
+        """,
+        {"repo": repo_filter} if repo_filter else {},
+    )))
+
+    if not rows:
+        return "No ingested versions found. Use the UI to ingest a repository first."
+
+    lines = ["Ingested Versions", "=" * 40]
+    for i, row in enumerate(rows, 1):
+        name = row.get("repo_name", row.get("repo_path", "?"))
+        status = row.get("status", "?")
+        when = row.get("ingested_at", "?")
+        files = row.get("file_count", "?")
+        github = row.get("github_url")
+
+        lines.append(f"\n{i}. {name}")
+        if github:
+            lines.append(f"   source:  {github}")
+        lines.append(f"   status:  {status}")
+        lines.append(f"   files:   {files}")
+        lines.append(f"   date:    {when}")
+        if row.get("snapshot_path"):
+            lines.append(f"   snapshot: yes")
+
+    lines.append(f"\nTotal: {len(rows)} version(s)")
+    return "\n".join(lines)
