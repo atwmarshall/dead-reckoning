@@ -107,8 +107,15 @@ def _run_ingestion(
     existing_ingestion_id: str | None = None,
     resume_mode: bool = False,
 ) -> None:
+    def _set_stage(text: str):
+        prev = progress.get("stage")
+        if prev and prev != text:
+            progress.setdefault("stages_log", []).append(f"\u2713 {prev}")
+        progress["stage"] = text
+
     try:
         # 1. Create or reuse ingestion record
+        _set_stage("Creating ingestion record...")
         if existing_ingestion_id:
             ingestion_id = existing_ingestion_id
         else:
@@ -121,6 +128,7 @@ def _run_ingestion(
         progress["ingestion_id"] = ingestion_id
 
         # 1.5. Create tar snapshot of current disk state (non-fatal)
+        _set_stage("Creating snapshot...")
         new_snapshot_path = None
         if not existing_ingestion_id:
             iid_bare = ingestion_id.split(":", 1)[1] if ":" in ingestion_id else ingestion_id
@@ -131,6 +139,7 @@ def _run_ingestion(
 
         # 2. Run diff if we have a previous version (skip on resume)
         if prev_ingestion_id and not resume_mode:
+            _set_stage("Computing diff...")
             diff_status_log.append("Computing diff…")
 
             async def _run_diff():
@@ -147,6 +156,7 @@ def _run_ingestion(
             diff_status_log.append(f"Diff complete — {len(diff_highlights)} nodes highlighted.")
 
         # 3. Run LangGraph ingestion agent
+        _set_stage("Discovering files...")
         progress["status"] = "running"
         agent = build_ingestion_agent()
         config = {"configurable": {"thread_id": thread_id}}
@@ -183,14 +193,19 @@ def _run_ingestion(
                 stream_cmd = None  # fresh ingest already finished in one stream
 
         # 3c. Process files
+        _set_stage("Processing files...")
+
         def _update_progress(chunk):
             processed = chunk.get("processed_files") or []
             all_files = chunk.get("all_files") or []
-            progress["processed"] = len(processed)
-            progress["total"] = len(all_files)
+            n = len(processed)
+            total = len(all_files)
+            progress["processed"] = n
+            progress["total"] = total
 
             current = chunk.get("current_file", "")
             if current:
+                progress["stage"] = f"Processing {n}/{total}: {Path(current).name}"
                 if prev_ingestion_id:
                     prev_node_id = (
                         "file:"
@@ -206,6 +221,13 @@ def _run_ingestion(
                     progress["status"] = "stopped"
                     return
 
+        _set_stage("Linking function calls...")
+
+        # Wait for the agent to finish (call edges + finalize happen inside the graph)
+        # The stages above are approximate — the graph handles these internally.
+
+        _set_stage("Finalizing...")
+
         # 4. Clear diff_status from prev version's nodes in DB
         if prev_ingestion_id:
             async def _clear_diff_status():
@@ -214,10 +236,15 @@ def _run_ingestion(
                         "UPDATE file SET diff_status = NONE WHERE ingestion_id = $iid",
                         {"iid": prev_ingestion_id},
                     )
+                    await db.query(
+                        "UPDATE `function` SET diff_status = NONE WHERE ingestion_id = $iid",
+                        {"iid": prev_ingestion_id},
+                    )
             asyncio.run(_clear_diff_status())
 
         diff_highlights.clear()
         progress.pop("diff_base_iid", None)
+        _set_stage("Done")
         progress["status"] = "done"
 
     except Exception as exc:
@@ -271,13 +298,13 @@ def _fetch_graph_data(ingestion_id: str | None = None) -> tuple:
                 repos   = await db.query("SELECT id, name FROM repo WHERE ingestion_id = $iid LIMIT 100", p)
                 folders = await db.query("SELECT id, path FROM folder WHERE ingestion_id = $iid LIMIT 5000", p)
                 files   = await db.query("SELECT id, path, diff_status FROM file WHERE ingestion_id = $iid LIMIT 5000", p)
-                fns     = await db.query("SELECT id, name FROM `function` WHERE ingestion_id = $iid LIMIT 5000", p)
+                fns     = await db.query("SELECT id, name, diff_status FROM `function` WHERE ingestion_id = $iid LIMIT 5000", p)
                 classes = await db.query("SELECT id, name FROM `class` WHERE ingestion_id = $iid LIMIT 5000", p)
             else:
                 repos   = await db.query("SELECT id, name FROM repo LIMIT 100")
                 folders = await db.query("SELECT id, path FROM folder LIMIT 5000")
                 files   = await db.query("SELECT id, path, diff_status FROM file LIMIT 5000")
-                fns     = await db.query("SELECT id, name FROM `function` LIMIT 5000")
+                fns     = await db.query("SELECT id, name, diff_status FROM `function` LIMIT 5000")
                 classes = await db.query("SELECT id, name FROM `class` LIMIT 5000")
 
             contains_edges = await db.query("SELECT in, out FROM contains LIMIT 5000")
@@ -350,8 +377,14 @@ def _build_agraph(
         for row in _get_rows(fns):
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
+            ds = row.get("diff_status")
+            if ds and ds in DIFF_COLORS:
+                color = DIFF_COLORS[ds]
+            elif is_diff_mode:
+                color = DIFF_MUTED
+            else:
+                color = FUNC_COLOR
             if nid and nid not in seen:
-                color = DIFF_MUTED if is_diff_mode else FUNC_COLOR
                 nodes.append(Node(id=nid, label=label, color=color, size=12))
                 seen.add(nid)
 
@@ -738,6 +771,8 @@ def _start_ingestion(pending: dict, prev_ingestion_id: str | None) -> None:
         "processed": 0, "total": 0, "status": "running",
         "diff_base_iid": prev_ingestion_id,
         "resume_event": resume_event,
+        "stage": "Starting...",
+        "stages_log": [],
     }
 
     # Persist context for resume
@@ -792,6 +827,8 @@ def _resume_ingestion() -> None:
         "diff_base_iid": prev_ingestion_id,
         "resume_event": resume_event,
         "ingestion_id": ingestion_id,
+        "stage": "Resuming...",
+        "stages_log": p.get("stages_log", []),
     }
 
     st.session_state.ingest_stop_event = stop_event
@@ -999,19 +1036,26 @@ with st.sidebar:
         processed = p.get("processed", 0)
         total = p.get("total", 0)
 
-        if status == "running":
-            label = f"Indexing… {processed} / {total or '?'} files"
-            st.info(label)
-            if total > 0:
-                st.progress(processed / total)
-        elif status == "awaiting_resume":
-            st.info("Diff ready — review the graph, then click Resume.")
+        if status in ("running", "awaiting_resume"):
+            stage = p.get("stage", "Starting...")
+            if status == "awaiting_resume":
+                stage = "Diff ready — review the graph, then click Resume."
+            with st.status(stage, expanded=True):
+                for entry in p.get("stages_log", []):
+                    st.write(entry)
+                if total > 0:
+                    st.progress(processed / total)
         elif status == "stopping":
-            st.warning(f"Stopping… {processed} / {total}")
-            if total > 0:
-                st.progress(processed / total)
+            with st.status("Stopping...", expanded=True):
+                for entry in p.get("stages_log", []):
+                    st.write(entry)
+                if total > 0:
+                    st.progress(processed / total)
         elif status == "done":
-            st.success(f"Done — {processed} / {total} files indexed.")
+            with st.status("Done", expanded=False, state="complete"):
+                for entry in p.get("stages_log", []):
+                    st.write(entry)
+                st.write(f"{processed} / {total} files indexed.")
         elif status == "stopped":
             st.warning(f"Paused at {processed} / {total} files.")
         elif status == "error":

@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 import ollama as ollama_client
 from dotenv import load_dotenv
+from langsmith import traceable
 from surrealdb import AsyncSurreal
 
 load_dotenv()
@@ -82,6 +83,7 @@ def _get_rows(result) -> list:
     return []
 
 
+@traceable(name="create_ingestion", run_type="chain")
 async def create_ingestion(
     db: AsyncSurreal,
     repo_path: str,
@@ -102,6 +104,7 @@ async def create_ingestion(
     return f"ingestion:{iid}"
 
 
+@traceable(name="finalize_ingestion", run_type="chain")
 async def finalize_ingestion(
     db: AsyncSurreal,
     ingestion_id: str,
@@ -170,6 +173,7 @@ async def delete_ingestion(db: AsyncSurreal, ingestion_id: str) -> None:
 # Load a single parsed file into SurrealDB
 # ---------------------------------------------------------------------------
 
+@traceable(name="load_file", run_type="chain")
 async def load_file(
     parsed: dict,
     db: AsyncSurreal,
@@ -295,7 +299,7 @@ async def load_file(
                lineno = $lineno, docstring = $docstring,
                has_docstring = $has_docstring, class_name = $class_name,
                is_method = $is_method, embedding = $embedding,
-               ingestion_id = $iid""",
+               ingestion_id = $iid, content_hash = $ch""",
             {
                 "id": fnid,
                 "name": fn["name"],
@@ -307,6 +311,7 @@ async def load_file(
                 "is_method": class_name is not None,
                 "embedding": embeddings_map.get(idx),
                 "iid": ingestion_id,
+                "ch": fn.get("source_hash"),
             },
         )
         eid = _edge_id(fid, "contains", fnid)
@@ -342,6 +347,7 @@ async def load_file(
 # Second-pass: create calls edges across all ingested files
 # ---------------------------------------------------------------------------
 
+@traceable(name="load_calls", run_type="chain")
 async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: str = "") -> int:
     """Create function→calls→function edges for all parsed files (second pass).
 

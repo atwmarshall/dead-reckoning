@@ -2,6 +2,8 @@ import hashlib
 import tarfile
 from pathlib import Path
 
+from langsmith import traceable
+
 SNAPSHOT_DIR = Path.home() / ".dead-reckoning" / "snapshots"
 _SKIP = {"__pycache__", ".git", "venv", ".venv", "node_modules", ".tox"}
 
@@ -14,6 +16,7 @@ def _sha256_member(tf: tarfile.TarFile, member: tarfile.TarInfo) -> str:
     return h.hexdigest()
 
 
+@traceable(name="create_snapshot", run_type="chain")
 def create_snapshot(disk_path: str, ingestion_id: str) -> Path:
     """Tar all .py files into ~/.dead-reckoning/snapshots/{ingestion_id}.tar"""
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -37,6 +40,7 @@ def read_snapshot(tar_path: Path) -> dict[str, str]:
     return result
 
 
+@traceable(name="diff_snapshots", run_type="chain")
 def diff_snapshots(old_tar: Path, new_tar: Path) -> list[dict]:
     """
     Returns list of {path, status} where status is green/yellow/red.

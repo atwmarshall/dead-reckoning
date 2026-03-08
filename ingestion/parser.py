@@ -1,7 +1,11 @@
 import ast
+import hashlib
 from pathlib import Path
 
+from langsmith import traceable
 
+
+@traceable(name="parse_file", run_type="chain")
 def parse_file(path: str) -> dict:
     source = Path(path).read_text(encoding="utf-8")
     tree = ast.parse(source, filename=path)
@@ -9,6 +13,14 @@ def parse_file(path: str) -> dict:
     functions = []
     classes = []
     imports = []
+
+    source_lines = source.splitlines()
+
+    def _source_hash(node):
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            segment = "\n".join(source_lines[node.lineno - 1:node.end_lineno])
+        return hashlib.sha256(segment.encode()).hexdigest()
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -18,6 +30,7 @@ def parse_file(path: str) -> dict:
                 "docstring": ast.get_docstring(node),
                 "class_name": None,
                 "calls": _extract_calls(node),
+                "source_hash": _source_hash(node),
             })
 
         elif isinstance(node, ast.ClassDef):
@@ -40,6 +53,7 @@ def parse_file(path: str) -> dict:
                         "docstring": ast.get_docstring(child),
                         "class_name": node.name,
                         "calls": _extract_calls(child),
+                        "source_hash": _source_hash(child),
                     })
 
     for node in ast.walk(tree):
@@ -81,6 +95,7 @@ def _dotted(node: ast.Attribute) -> str:
     return ".".join(reversed(parts))
 
 
+@traceable(name="parse_repo", run_type="chain")
 def parse_repo(repo_path: str) -> list[dict]:
     skip = {"__pycache__", ".git", "venv", ".venv", "node_modules", ".tox"}
     root = Path(repo_path)

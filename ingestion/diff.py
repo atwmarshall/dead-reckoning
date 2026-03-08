@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from typing import AsyncGenerator
 
+from langsmith import traceable
+
 from ingestion.snapshot import SNAPSHOT_DIR, diff_snapshots
 
 _SKIP = {"__pycache__", ".git", "venv", ".venv", "node_modules", ".tox"}
@@ -29,6 +31,11 @@ def _file_node_id(path: str, ingestion_id: str) -> str:
     return f"file:{hashlib.md5((path + ingestion_id).encode()).hexdigest()[:12]}"
 
 
+def _function_node_id(file_path: str, class_name: str | None, fn_name: str, ingestion_id: str) -> str:
+    key = f"{file_path}::{class_name or ''}::{fn_name}::{ingestion_id}"
+    return f"function:{hashlib.md5(key.encode()).hexdigest()[:12]}"
+
+
 def _get_rows(result) -> list:
     if isinstance(result, list):
         if result and isinstance(result[0], dict) and "result" in result[0]:
@@ -39,13 +46,94 @@ def _get_rows(result) -> list:
 
 class DiffEngine:
     @staticmethod
+    async def _diff_functions(
+        db,
+        prev_ingestion_id: str,
+        file_path: str,
+        file_status: str,
+        new_disk_path: str | None = None,
+    ) -> list[dict]:
+        """Compare function-level content_hash for a single file.
+
+        Returns list of {"node_id", "status", "name"} events.
+        For 'red' files, all functions are red.
+        For 'yellow' files, compare by (name, class_name) key.
+        For 'green' files, all functions are green.
+        """
+        # Get prev functions for this file
+        file_rid = _file_node_id(file_path, prev_ingestion_id)
+        prev_fns = _get_rows(await db.query(
+            "SELECT id, name, class_name, content_hash FROM `function` WHERE ingestion_id = $iid AND file = type::record('file', $frid)",
+            {"iid": prev_ingestion_id, "frid": file_rid.split(":", 1)[1]},
+        ))
+
+        if not prev_fns:
+            return []
+
+        events = []
+
+        if file_status == "red":
+            for fn in prev_fns:
+                fn_nid = str(fn["id"])
+                rid = fn_nid.split(":", 1)[1] if ":" in fn_nid else fn_nid
+                await db.query(
+                    "UPDATE type::record('function', $rid) SET diff_status = $s",
+                    {"rid": rid, "s": "red"},
+                )
+                events.append({"node_id": fn_nid, "status": "red", "name": fn.get("name", "")})
+        elif file_status == "green":
+            for fn in prev_fns:
+                fn_nid = str(fn["id"])
+                rid = fn_nid.split(":", 1)[1] if ":" in fn_nid else fn_nid
+                await db.query(
+                    "UPDATE type::record('function', $rid) SET diff_status = $s",
+                    {"rid": rid, "s": "green"},
+                )
+                events.append({"node_id": fn_nid, "status": "green", "name": fn.get("name", "")})
+        elif file_status == "yellow":
+            # Parse the new version of the file to get current function hashes
+            new_fn_hashes: dict[tuple[str | None, str], str] = {}
+            if new_disk_path:
+                try:
+                    from ingestion.parser import parse_file
+                    parsed = parse_file(new_disk_path)
+                    for fn in parsed.get("functions", []):
+                        key = (fn.get("class_name"), fn["name"])
+                        if fn.get("source_hash"):
+                            new_fn_hashes[key] = fn["source_hash"]
+                except Exception:
+                    pass
+
+            prev_fn_map: dict[tuple[str | None, str], dict] = {}
+            for fn in prev_fns:
+                key = (fn.get("class_name"), fn.get("name", ""))
+                prev_fn_map[key] = fn
+
+            for key, fn in prev_fn_map.items():
+                fn_nid = str(fn["id"])
+                rid = fn_nid.split(":", 1)[1] if ":" in fn_nid else fn_nid
+                if key not in new_fn_hashes:
+                    status = "red"
+                elif fn.get("content_hash") == new_fn_hashes[key]:
+                    status = "green"
+                else:
+                    status = "yellow"
+                await db.query(
+                    "UPDATE type::record('function', $rid) SET diff_status = $s",
+                    {"rid": rid, "s": status},
+                )
+                events.append({"node_id": fn_nid, "status": status, "name": fn.get("name", "")})
+
+        return events
+
+    @staticmethod
     async def run(
         repo_path: str,
         prev_ingestion_id: str,
         db,
         new_snapshot_path: Path | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """Async generator yielding diff events for each file.
+        """Async generator yielding diff events for each file and function.
 
         Each event: {"node_id": str, "status": "green"|"yellow"|"red", "path": str}
           green  = unchanged
@@ -63,18 +151,14 @@ class DiffEngine:
         )
         old_snapshot = SNAPSHOT_DIR / f"{prev_iid_bare}.tar"
 
+        # Collect file events first, then do function-level diff
+        file_events: list[dict] = []
+
         if (
             old_snapshot.exists()
             and new_snapshot_path is not None
             and Path(new_snapshot_path).exists()
         ):
-            # Tar-based diff: compare relative paths between two snapshots.
-            # Need to reconstruct absolute paths to find prev nodes in DB.
-
-            # Build rel_path → abs_path map for all prev files.
-            # Infer the disk root as the common directory of all file paths
-            # (this gives us the actual disk_path used at snapshot creation time,
-            # which may differ from the canonical repo_path stored in DB).
             prev_file_rows = _get_rows(
                 await db.query(
                     "SELECT path FROM file WHERE ingestion_id = $iid",
@@ -110,10 +194,11 @@ class DiffEngine:
                     "UPDATE type::record('file', $rid) SET diff_status = $s",
                     {"rid": rid, "s": event["status"]},
                 )
+                file_event = {"node_id": node_id, "status": event["status"], "path": abs_path, "_rel": rel_path}
+                file_events.append(file_event)
                 yield {"node_id": node_id, "status": event["status"], "path": abs_path}
 
         else:
-            # Fallback: DB hash comparison
             prev_rows = _get_rows(
                 await db.query(
                     "SELECT path, content_hash FROM file WHERE ingestion_id = $iid",
@@ -146,7 +231,9 @@ class DiffEngine:
                     "UPDATE type::record('file', $rid) SET diff_status = $s",
                     {"rid": rid, "s": status},
                 )
-                yield {"node_id": node_id, "status": status, "path": path}
+                file_event = {"node_id": node_id, "status": status, "path": path}
+                file_events.append(file_event)
+                yield file_event
 
             for path in prev_paths - current_paths:
                 node_id = _file_node_id(path, prev_ingestion_id)
@@ -155,4 +242,30 @@ class DiffEngine:
                     "UPDATE type::record('file', $rid) SET diff_status = $s",
                     {"rid": rid, "s": "red"},
                 )
-                yield {"node_id": node_id, "status": "red", "path": path}
+                file_event = {"node_id": node_id, "status": "red", "path": path}
+                file_events.append(file_event)
+                yield file_event
+
+        # Function-level diff for all files
+        for fe in file_events:
+            new_disk_path = None
+            if fe["status"] == "yellow":
+                # Use relative path if available, otherwise derive from abs path
+                rel = fe.get("_rel")
+                if rel:
+                    candidate = str(Path(repo_path) / rel)
+                else:
+                    try:
+                        rel = str(Path(fe["path"]).relative_to(repo_path))
+                        candidate = fe["path"]
+                    except ValueError:
+                        candidate = None
+                if candidate and Path(candidate).exists():
+                    new_disk_path = candidate
+
+            fn_events = await DiffEngine._diff_functions(
+                db, prev_ingestion_id, fe["path"], fe["status"],
+                new_disk_path=new_disk_path,
+            )
+            for fn_ev in fn_events:
+                yield fn_ev

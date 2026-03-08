@@ -46,7 +46,7 @@ Say:
 *Click to LangSmith tab — show the interrupted run, then the resumed run below it*
 
 Say:
-> "Our ingestion agent was mapping this repo into a SurrealDB knowledge graph. Halfway through — I killed it. Here's the LangSmith trace."
+> "Our ingestion agent was mapping this repo into a SurrealDB knowledge graph. Watch the pipeline — each step traced, each file counted. Halfway through — I killed it. Here's the LangSmith trace."
 
 *Point at the two runs — interrupted, then resumed*
 
@@ -72,7 +72,7 @@ Say:
 *Click "Add new version" → graph animates → nodes turn green, yellow, red*
 
 Say:
-> "Green: unchanged. Yellow: modified. Red: deleted. The knowledge graph is now a diff."
+> "Green: unchanged. Yellow: modified. Red: deleted. Not just files — individual functions are green, yellow, or red. The knowledge graph is now a diff."
 
 *Open terminal. Type:*
 ```bash
@@ -101,9 +101,9 @@ Say (while agent responds):
 *Switch to LangSmith — trace for the query visible*
 
 Say:
-> "Every step observable. It called get_dependencies on the modified files to find downstream impact. Tool calls, graph traversal, fully auditable."
+> "Every operation observable — parse, load, embed, snapshot. Both the ingestion agent and the query agent are fully traced. It called get_dependencies on the modified files to find downstream impact. Tool calls, graph traversal, fully auditable."
 
-*Point at the tool call chain*
+*Point at the tool call chain — show ingestion trace tree alongside query trace*
 
 ---
 
@@ -127,6 +127,9 @@ Say:
 
 **"Why OCI tar format?"**
 > "Same content-addressing as Docker — SHA-256 per file, whiteout entries for deletions. Pure Python stdlib, zero extra dependencies. The snapshots are format-compatible: you can docker import them. We understood the spec well enough to implement it ourselves."
+
+**"How granular is the diff?"**
+> "Function-level. We hash each function's source text and compare across versions. A modified file gets yellow, but inside it individual functions show green, yellow, or red — so you can see exactly which functions changed."
 
 **"What happens to the graph on a new version?"**
 > "We diff the two tar snapshots — old SHA-256 vs new. Same hash goes green, changed goes yellow, absent goes red. SurrealDB nodes get a diff_status field updated in place. No re-ingestion needed for the diff — it's pure snapshot comparison."
