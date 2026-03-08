@@ -201,48 +201,54 @@ print('DEV-06 PASS')
 
 **File:** `agent/tools.py`
 
-**Build:** Four `@tool`-decorated functions. Each opens its own DB connection. Each returns a list of strings or a single string.
+**Build:** Four `@tool`-decorated functions. Each opens its own DB connection. Each returns a list of strings or a single string. All decorated with `@traceable` for LangSmith observability.
 
 ```
-get_dependencies(module: str) -> list[str]
-  Query: SELECT ->imports->file.path FROM file WHERE path CONTAINS module
-  Returns: list of imported file paths
+hybrid_search(query: str) -> list[str]
+  SurrealDB native RRF: fuses HNSW vector similarity + BM25 keyword matching
+  in a single search::rrf() call. Results enriched with parent class + siblings
+  via graph traversal.
 
-find_callers(function_name: str) -> list[str]  
-  Query: SELECT <-calls<-function.name FROM function WHERE name = function_name
-  Returns: list of function names that call this function
-  (If calls edges don't exist yet, return empty list — not an error)
+trace_impact(symbol: str) -> str
+  Multi-hop graph traversal: <-calls<-function<-calls<-function
+  Two hops through the calls graph in one SurrealQL query.
+  Returns direct callers, caller files, and transitive callers.
 
-semantic_search(query: str) -> list[str]
-  Embed the query using Ollama nomic-embed-text
-  Query: SELECT name, docstring FROM function ORDER BY 
-         vector::similarity::cosine(embedding, $vec) DESC LIMIT 5
-  Returns: list of "function_name: docstring" strings
+version_diff(module: str = "") -> str
+  Auto-detects versions from the ingestion table.
+  Reads diff_status (green/yellow/red) at file AND function granularity.
+  Pass a filename to filter, or leave empty for full summary.
 
-explain_module(module: str) -> str
-  Query: get all functions in a file
-  Return a formatted string listing each function + its docstring
+list_versions(repo_filter: str = "") -> str
+  Queries the ingestion table for all indexed repos and versions.
+  Shows file counts, timestamps, status, and snapshot info.
 ```
 
 **Test each tool standalone:**
 ```bash
 python -c "
-from agent.tools import get_dependencies, find_callers, explain_module
+from agent.tools import hybrid_search, trace_impact, version_diff, list_versions
 
-# Test with real data from your seeded DB
-deps = get_dependencies.invoke({'module': '_client'})
-print('deps:', deps)
-assert isinstance(deps, list), 'must return list'
+# Test hybrid search
+results = hybrid_search.invoke({'query': 'authentication'})
+print('hybrid_search:', len(results), 'results')
+assert isinstance(results, list) and len(results) > 0
 
-explained = explain_module.invoke({'module': '_auth'})
-print('explain:', explained[:200])
-assert len(explained) > 10, 'empty explanation'
+# Test trace impact
+impact = trace_impact.invoke({'symbol': 'slugify'})
+print('trace_impact:', impact[:100])
+assert isinstance(impact, str)
+
+# Test list versions
+versions = list_versions.invoke({'repo_filter': ''})
+print('list_versions:', versions[:100])
+assert 'Ingested Versions' in versions or 'No ingested' in versions
 
 print('DEV-07 PASS')
 "
 ```
 
-**Success:** Each tool returns real data from SurrealDB when called with a valid module name from the seeded repo.
+**Success:** Each tool returns real data from SurrealDB. All four visible in LangSmith with `@traceable` spans.
 
 ---
 
@@ -475,5 +481,5 @@ If time is short, cut in this order — lowest value first:
 **Never cut:**
 - The interrupt/resume demo (DEV-09) — this is the wow moment
 - LangSmith traces — 10% of judging score
-- At least 2 working agent tools — needed for agent workflow score
+- At least 2 working agent tools (we have 4) — needed for agent workflow score
 - README install instructions — required for submission

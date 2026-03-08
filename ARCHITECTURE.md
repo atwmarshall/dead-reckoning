@@ -92,6 +92,23 @@ namespace: hackathon
 database:  deadreckoning
 ```
 
+### Ingestion Table
+
+```sql
+-- INGESTION: tracks each repo ingestion run
+DEFINE TABLE ingestion SCHEMAFULL;
+  DEFINE FIELD repo_path    ON ingestion TYPE string;
+  DEFINE FIELD repo_name    ON ingestion TYPE string;
+  DEFINE FIELD github_url   ON ingestion TYPE option<string>;
+  DEFINE FIELD ingested_at  ON ingestion TYPE datetime;
+  DEFINE FIELD status       ON ingestion TYPE string DEFAULT 'pending';
+  DEFINE FIELD content_hash ON ingestion TYPE option<string>;
+  DEFINE FIELD file_count   ON ingestion TYPE option<int>;
+  DEFINE FIELD snapshot_path ON ingestion TYPE option<string>;
+```
+
+The `ingestion` table is central to version awareness — it records every ingestion run with timestamps, file counts, and snapshot paths. The `list_versions` tool queries it directly, and `version_diff` uses it to auto-detect which versions are being compared.
+
 ### Node Tables
 
 ```sql
@@ -155,6 +172,10 @@ class_id    = f"class:`{md5(path + '::' + name)[:12]}`"
 ### Key SurrealQL Query Patterns
 
 ```sql
+-- List ingested versions (list_versions tool)
+SELECT repo_path, repo_name, github_url, ingested_at, status, file_count, snapshot_path
+FROM ingestion ORDER BY ingested_at DESC;
+
 -- Upsert (idempotent ingestion)
 UPSERT type::record('file', $id) SET
   path = $path, line_count = $lc, language = 'python',
@@ -244,7 +265,7 @@ stateDiagram-v2
         [*] --> bind_tools
         bind_tools --> invoke_ollama
         invoke_ollama --> [*]
-        note right of bind_tools: hybrid_search, trace_impact,\nversion_diff bound via bind_tools()
+        note right of bind_tools: hybrid_search, trace_impact,\nversion_diff, list_versions\nbound via bind_tools()
     }
 
     state tools_node {
@@ -252,6 +273,7 @@ stateDiagram-v2
         ToolNode --> hybrid_search: semantic + keyword RRF
         ToolNode --> trace_impact: multi-hop graph traversal
         ToolNode --> version_diff: diff status from versioned graph
+        ToolNode --> list_versions: ingestion history query
     }
 ```
 
@@ -309,11 +331,12 @@ class IngestionState(TypedDict):
 
 ### Agent Tools
 
-Three tools are exposed to the query agent:
+Four tools are exposed to the query agent:
 
 1. **hybrid_search** — Combines HNSW vector similarity and BM25 full-text matching via SurrealDB's native `search::rrf()` in a single SurrealQL query. Results are enriched with parent class and sibling functions via graph traversal.
 2. **trace_impact** — Multi-hop graph traversal (`<-calls<-function<-calls<-function`) finding direct and transitive callers of any function. Two hops through the calls graph in one query.
-3. **version_diff** — Reads `diff_status` (green/yellow/red) from the versioned knowledge graph at both file and function granularity.
+3. **version_diff** — Auto-detects versions from the `ingestion` table, then reads `diff_status` (green/yellow/red) from the versioned knowledge graph at both file and function granularity. Requires no arguments.
+4. **list_versions** — Queries the `ingestion` table to show all indexed repositories, their versions, file counts, timestamps, and snapshot status. Lightweight — useful for "what's been ingested?" without triggering a full diff.
 
 ```mermaid
 flowchart TD
@@ -347,7 +370,8 @@ LangGraph run
     ├── hybrid_search    [retriever] native RRF (vector + BM25)
     │   └── graph_enrich x N  [retriever] parent_class, siblings
     ├── trace_impact     [retriever] multi-hop calls graph traversal
-    └── version_diff     [retriever] diff_status from versioned graph
+    ├── version_diff     [retriever] diff_status from versioned graph + ingestion auto-detect
+    └── list_versions    [retriever] ingestion history from SurrealDB
 ```
 
 ### Checkpointing: How Resumable Flows Work
@@ -389,7 +413,7 @@ llm = ChatOllama(
     model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),  # swap for gemma3:27b at demo
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
 )
-llm_with_tools = llm.bind_tools([hybrid_search, trace_impact, version_diff])
+llm_with_tools = llm.bind_tools([hybrid_search, trace_impact, version_diff, list_versions])
 
 # Embeddings — 768-dim vectors stored in SurrealDB function.embedding
 embedder = OllamaEmbeddings(model="nomic-embed-text")

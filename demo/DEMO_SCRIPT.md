@@ -128,7 +128,7 @@ what changed between versions and what might be affected?
 ```
 
 Say (while agent responds):
-> "Watch the agent reason. It has three tools. First it calls **version_diff** — that reads the diff_status field from every file and function node in SurrealDB. Red, yellow, green. Then it chains into **trace_impact** on the modified files — that's a multi-hop graph traversal: 'what calls this function, and what calls *that*?' Two hops through the calls graph in a single SurrealQL query. Not possible in a vector database."
+> "Watch the agent reason. It has four tools — and right now it's chaining two of them together. First it calls **version_diff** — that auto-detects the versions from the ingestion table, then reads the diff_status field from every file and function node in SurrealDB. Red, yellow, green. Then it chains into **trace_impact** on the modified files — that's a multi-hop graph traversal: 'what calls this function, and what calls *that*?' Two hops through the calls graph in a single SurrealQL query. Not possible in a vector database. That two-tool reasoning chain is a LangGraph conditional edge — visible right now in LangSmith."
 
 *Point at tool calls appearing in the response*
 
@@ -156,7 +156,7 @@ Say:
 *Switch back to graph — coloured nodes*
 
 Say:
-> "A knowledge graph that survives crashes, versions itself like a container layer, and lets you query across the diff. Three tools — semantic search with native RRF, multi-hop impact analysis, and version awareness. All in SurrealDB — the graph, the checkpoints, the version history. Same database. Three jobs."
+> "A knowledge graph that survives crashes, versions itself like a container layer, and lets you query across the diff. Four tools — semantic search with native RRF, multi-hop impact analysis, version diffing, and ingestion history. All backed by SurrealDB — the graph, the vectors, the checkpoints, the version history. Same database, four jobs. LangGraph routes the agent through conditional tool chains, and LangSmith traces every step."
 
 ---
 
@@ -170,6 +170,7 @@ Say:
 - **What it does:** Finds functions by concept or name using combined semantic + keyword search
 - **SurrealDB feature:** `search::rrf()` fuses HNSW vector similarity and BM25 full-text matching in a single SurrealQL query — no application-side rank merging
 - **Graph enrichment:** Results are enriched with parent class and sibling functions via graph traversal
+- **LangSmith:** Nested spans show vector search, keyword search, RRF fusion, and per-result graph enrichment
 - **Prompt to trigger (httpx):** `"which functions handle authentication?"` or `"find the HTTP client logic"`
 - **Prompt to trigger (fixtures):** `"find the slugify function"` or `"database configuration settings"`
 
@@ -177,19 +178,28 @@ Say:
 - **What it does:** Maps the blast radius of a change — finds everything that directly or transitively depends on a function
 - **SurrealDB feature:** Multi-hop graph traversal (`<-calls<-function<-calls<-function`) in a single query — 2 hops through the calls graph, returning direct callers AND their callers
 - **Why it matters:** This is structural analysis that context windows can't do. "What calls X, and what calls that?" requires the graph
+- **LangSmith:** Single retriever span showing the multi-hop SurrealQL query
 - **Prompt to trigger (httpx):** `"what would break if I changed _send?"` or `"what depends on _client?"`
 - **Prompt to trigger (fixtures):** `"what would break if I changed slugify?"` or `"what depends on utils?"`
 
 ### version_diff
 - **What it does:** Summarises what changed between two ingested versions at file AND function granularity
-- **SurrealDB feature:** Reads `diff_status` from the versioned knowledge graph, traverses `->contains->function` edges to show per-function changes within each file
-- **Why it matters:** The graph is version-aware — not just "what exists" but "what changed" — and the agent can reason over the diff
+- **SurrealDB feature:** Auto-detects versions from the `ingestion` table, then reads `diff_status` from the versioned knowledge graph, traverses `->contains->function` edges to show per-function changes within each file
+- **Why it matters:** The graph is version-aware — not just "what exists" but "what changed" — and the agent can reason over the diff. Zero arguments needed — it figures out what to compare
+- **LangSmith:** Shows ingestion table query + diff_status graph queries as nested spans
 - **Prompt to trigger:** `"what changed between versions?"` or `"show me the diff summary"`
+
+### list_versions
+- **What it does:** Shows all ingested repositories, their versions, file counts, timestamps, and snapshot status
+- **SurrealDB feature:** Queries the `ingestion` table directly — demonstrates SurrealDB as a structured metadata store alongside its graph/vector roles
+- **Why it matters:** The agent can answer "what's been indexed?" without the user needing to check the UI. Lightweight — doesn't trigger any diff computation
+- **LangSmith:** Single retriever span querying the ingestion table
+- **Prompt to trigger:** `"what repos are indexed?"` or `"what versions are available?"` or `"what has been ingested?"`
 
 ### Multi-tool chain (the demo moment)
 - The prompt `"what changed between versions and what might be affected?"` triggers **version_diff** first, then the agent chains into **trace_impact** on the modified items
-- This shows agent reasoning: understand the diff, then assess the blast radius
-- Visible as a two-step tool call sequence in LangSmith
+- This shows LangGraph's conditional tool routing: the agent reasons about the diff, then decides to assess the blast radius
+- Visible as a two-step tool call sequence in LangSmith — the key demo of agent reasoning over a knowledge graph
 
 ---
 
@@ -203,6 +213,9 @@ what changed between versions and what might be affected?
 which functions handle authentication?
 what would break if I changed _send?
 find the HTTP client logic and explain how requests flow
+
+# Show ingestion awareness (any graph)
+what repos have been indexed and how many versions?
 ```
 
 ---
@@ -222,10 +235,13 @@ find the HTTP client logic and explain how requests flow
 > "We diff the two tar snapshots — old SHA-256 vs new. Same hash goes green, changed goes yellow, absent goes red. SurrealDB nodes get a diff_status field updated in place. No re-ingestion needed for the diff — it's pure snapshot comparison."
 
 **"Why SurrealDB specifically?"**
-> "One instance doing three things: knowledge graph with typed edges, LangGraph checkpoint state, and version history with snapshot paths. Graph traversal AND vector search AND full-text BM25 in a single SurrealQL query via `search::rrf()`. No second database anywhere."
+> "One instance doing four things: knowledge graph with typed edges, HNSW vector search with BM25 full-text via native `search::rrf()`, LangGraph checkpoint state, and ingestion history with version tracking. Graph traversal AND vector search AND relational queries in the same SurrealQL statement. No second database anywhere."
 
-**"What's the LangGraph checkpointer doing?"**
-> "After every node, LangGraph serialises the full agent state and writes it to SurrealDB via langgraph-checkpoint-surrealdb. Same thread ID on resume = rehydrate that state and continue the loop from where it stopped."
+**"What's LangGraph doing here?"**
+> "Two things. First, the query agent is a LangGraph StateGraph with conditional edges — the LLM decides which tools to call, and chains them together. version_diff into trace_impact is a two-step reasoning chain, not hardcoded. Second, the ingestion pipeline is a separate LangGraph graph with per-file checkpoints — kill it, resume it, same thread ID. Both share the same SurrealDB checkpointer via langgraph-checkpoint-surrealdb."
+
+**"What does LangSmith show?"**
+> "Every agent step is observable. Tool calls appear as nested spans — you can see the LLM reasoning, the SurrealQL queries, the graph traversals. The multi-tool chain (version_diff then trace_impact) is visible as a two-step sequence. Both the ingestion agent and query agent are fully traced. We use `@traceable` decorators on every retrieval function."
 
 **"What's search::rrf()?"**
 > "Reciprocal Rank Fusion. We run two searches — HNSW vector similarity for semantic meaning and BM25 for keyword matching — then SurrealDB's built-in `search::rrf()` function merges both ranked lists into one. The fusion happens inside the database in a single query, not in our Python code."
