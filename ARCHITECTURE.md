@@ -92,6 +92,23 @@ namespace: hackathon
 database:  deadreckoning
 ```
 
+### Ingestion Table
+
+```sql
+-- INGESTION: tracks each repo ingestion run
+DEFINE TABLE ingestion SCHEMAFULL;
+  DEFINE FIELD repo_path    ON ingestion TYPE string;
+  DEFINE FIELD repo_name    ON ingestion TYPE string;
+  DEFINE FIELD github_url   ON ingestion TYPE option<string>;
+  DEFINE FIELD ingested_at  ON ingestion TYPE datetime;
+  DEFINE FIELD status       ON ingestion TYPE string DEFAULT 'pending';
+  DEFINE FIELD content_hash ON ingestion TYPE option<string>;
+  DEFINE FIELD file_count   ON ingestion TYPE option<int>;
+  DEFINE FIELD snapshot_path ON ingestion TYPE option<string>;
+```
+
+The `ingestion` table is central to version awareness — it records every ingestion run with timestamps, file counts, and snapshot paths. The `list_versions` tool queries it directly, and `version_diff` uses it to auto-detect which versions are being compared.
+
 ### Node Tables
 
 ```sql
@@ -155,18 +172,42 @@ class_id    = f"class:`{md5(path + '::' + name)[:12]}`"
 ### Key SurrealQL Query Patterns
 
 ```sql
+-- List ingested versions (list_versions tool)
+SELECT repo_path, repo_name, github_url, ingested_at, status, file_count, snapshot_path
+FROM ingestion ORDER BY ingested_at DESC;
+
 -- Upsert (idempotent ingestion)
-INSERT INTO file { id: file:`abc123`, path: "auth.py", language: "python", line_count: 120 }
-  ON DUPLICATE KEY UPDATE line_count = line_count;
+UPSERT type::record('file', $id) SET
+  path = $path, line_count = $lc, language = 'python',
+  ingestion_id = $iid, content_hash = $ch;
 
--- Create a graph edge
-RELATE file:`abc123` -> imports -> file:`def456`;
+-- Create a graph edge (idempotent via ON DUPLICATE KEY)
+INSERT RELATION INTO contains {
+  id: type::record('contains', $eid),
+  in: type::record('file', $fid),
+  out: type::record('function', $fnid)
+} ON DUPLICATE KEY UPDATE in = in;
 
--- Forward graph traversal: what does auth.py import?
-SELECT ->imports->file.path AS imports FROM file:`abc123`;
+-- Forward graph traversal: what does a file contain?
+SELECT ->contains->`function`.name AS functions FROM file WHERE path CONTAINS $path;
 
 -- Reverse traversal: what imports utils.py?
-SELECT <-imports<-file.path AS imported_by FROM file:`def456`;
+SELECT <-imports<-file.path AS imported_by FROM file WHERE path CONTAINS 'utils';
+
+-- Multi-hop graph traversal: direct + transitive callers (trace_impact tool)
+SELECT name, file.path AS path,
+       <-calls<-`function`.name AS direct_callers,
+       <-calls<-`function`<-calls<-`function`.name AS transitive_callers
+FROM `function` WHERE name CONTAINS $symbol;
+
+-- Hybrid search with native RRF (hybrid_search tool)
+LET $vs = SELECT *, vector::similarity::cosine(embedding, $vec) AS score
+          FROM `function` WHERE embedding <|5,100|> $vec;
+LET $ft = SELECT *, search::score(0) + search::score(1) AS score
+          FROM `function`
+          WHERE name @0@ $keyword OR docstring @1@ $keyword
+          ORDER BY score DESC LIMIT 10;
+RETURN search::rrf([$vs, $ft], 5, 60);
 
 -- Find parent class by proximity (lineno ordering)
 SELECT name, bases, lineno FROM `class`
@@ -178,19 +219,9 @@ SELECT name FROM `function`
 WHERE file.path = $path AND class_name = $class_name AND name != $name
 LIMIT 20;
 
--- Vector similarity search (semantic retrieval)
-SELECT id, name, lineno, class_name, docstring, file.path AS path,
-       vector::similarity::cosine(embedding, $vec) AS score
-FROM `function`
-WHERE embedding IS NOT NONE
-  AND vector::similarity::cosine(embedding, $vec) >= $threshold
-ORDER BY score DESC LIMIT 10;
-
--- Keyword match (graph name search)
-SELECT id, name, lineno, class_name, docstring, file.path AS path
-FROM `function`
-WHERE string::lowercase(name) CONTAINS $term
-LIMIT 25;
+-- Version diff: files with diff status (version_diff tool)
+SELECT path, diff_status, ->contains->`function`.name AS functions
+FROM file WHERE diff_status IS NOT NONE ORDER BY diff_status;
 ```
 
 ### How Context Evolves During Execution
@@ -234,14 +265,15 @@ stateDiagram-v2
         [*] --> bind_tools
         bind_tools --> invoke_ollama
         invoke_ollama --> [*]
-        note right of bind_tools: hybrid_search bound via\nbind_tools([hybrid_search])
+        note right of bind_tools: hybrid_search, trace_impact,\nversion_diff, list_versions\nbound via bind_tools()
     }
 
     state tools_node {
         [*] --> ToolNode
-        ToolNode --> hybrid_search
-        hybrid_search --> DeadReckoningRetriever
-        DeadReckoningRetriever --> [*]
+        ToolNode --> hybrid_search: semantic + keyword RRF
+        ToolNode --> trace_impact: multi-hop graph traversal
+        ToolNode --> version_diff: diff status from versioned graph
+        ToolNode --> list_versions: ingestion history query
     }
 ```
 
@@ -250,10 +282,13 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> initialize
-    initialize --> process_file: files remaining
-    initialize --> [*]: no files (already complete)
+    initialize --> review_diff: always
+    review_diff --> process_file: files remaining
+    review_diff --> create_call_edges: no files remaining
     process_file --> process_file: more files remaining
-    process_file --> [*]: all files processed
+    process_file --> create_call_edges: all files processed
+    create_call_edges --> finalize
+    finalize --> [*]
 
     state initialize {
         [*] --> check_all_files
@@ -285,28 +320,36 @@ class AgentState(TypedDict):
 # Ingestion agent — progress tracking state
 class IngestionState(TypedDict):
     messages: Annotated[list, add_messages]
-    repo_path: str
+    repo_path: str          # canonical identifier stored in DB (URL or local path)
+    disk_path: str          # actual filesystem path used for parsing
+    ingestion_id: str       # SurrealDB ingestion record ID
+    prev_ingestion_id: str  # empty string for fresh ingests
     all_files:       list[str]  # all .py files discovered on first run
     processed_files: list[str]  # grows with each checkpoint
     current_file:    str        # last file processed
 ```
 
-### hybrid_search: Retrieval Pipeline
+### Agent Tools
 
-The sole tool exposed to the query agent. Combines semantic vector search and keyword graph search via Reciprocal Rank Fusion (RRF), then enriches results with graph context.
+Four tools are exposed to the query agent:
+
+1. **hybrid_search** — Combines HNSW vector similarity and BM25 full-text matching via SurrealDB's native `search::rrf()` in a single SurrealQL query. Results are enriched with parent class and sibling functions via graph traversal.
+2. **trace_impact** — Multi-hop graph traversal (`<-calls<-function<-calls<-function`) finding direct and transitive callers of any function. Two hops through the calls graph in one query.
+3. **version_diff** — Auto-detects versions from the `ingestion` table, then reads `diff_status` (green/yellow/red) from the versioned knowledge graph at both file and function granularity. Requires no arguments.
+4. **list_versions** — Queries the `ingestion` table to show all indexed repositories, their versions, file counts, timestamps, and snapshot status. Lightweight — useful for "what's been ingested?" without triggering a full diff.
 
 ```mermaid
 flowchart TD
-    Q[User query string] --> EX[_extract_terms\nCamelCase split + stopword filter]
+    Q[User query string] --> EX[stopword filter\nextract keyword terms]
     Q --> EMB[OllamaEmbeddings\nnomic-embed-text 768-dim]
 
-    EX -->|keyword terms| KW[_keyword\nSurrealQL: name CONTAINS term]
-    EMB -->|embedding vector| SEM[_semantic\nSurrealQL: vector::similarity::cosine >= threshold]
+    EX -->|keyword| FT[SurrealQL: BM25 full-text\nname @0@ keyword OR docstring @1@ keyword]
+    EMB -->|embedding vector| VS[SurrealQL: HNSW vector\nembedding less|5,100| greater $vec]
 
-    KW -->|ranked list| RRF[_rrf_merge\nReciprocal Rank Fusion\nscore = Σ 1/(k + rank)\nexact-name bonus: +1/k]
-    SEM -->|ranked list| RRF
+    FT -->|ranked list| RRF[search::rrf\nNative SurrealDB fusion\nk=5, window=60]
+    VS -->|ranked list| RRF
 
-    RRF -->|top N docs| ENR[_enrich x N in parallel\nasyncio.gather]
+    RRF -->|top 5 docs| ENR[_enrich x N in parallel\nasyncio.gather]
 
     ENR -->|doc + path + lineno| PC["SurrealQL: parent class\n(lineno proximity ordering)"]
     ENR -->|doc + class_name| SB["SurrealQL: sibling methods\n(same file + class_name)"]
@@ -324,11 +367,11 @@ Every retrieval sub-step is decorated with `@traceable`, producing a nested trac
 LangGraph run
 └── llm_node
 └── tools_node
-    └── hybrid_search
-        ├── semantic_search     [retriever] vec_dims=768, threshold=0.55
-        ├── keyword_search      [retriever] terms=[...]
-        ├── rrf_merge           [chain]     list_counts=[N, M]
-        └── graph_enrich x N   [retriever] function, parent_class, siblings
+    ├── hybrid_search    [retriever] native RRF (vector + BM25)
+    │   └── graph_enrich x N  [retriever] parent_class, siblings
+    ├── trace_impact     [retriever] multi-hop calls graph traversal
+    ├── version_diff     [retriever] diff_status from versioned graph + ingestion auto-detect
+    └── list_versions    [retriever] ingestion history from SurrealDB
 ```
 
 ### Checkpointing: How Resumable Flows Work
@@ -370,7 +413,7 @@ llm = ChatOllama(
     model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),  # swap for gemma3:27b at demo
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
 )
-llm_with_tools = llm.bind_tools([hybrid_search])
+llm_with_tools = llm.bind_tools([hybrid_search, trace_impact, version_diff, list_versions])
 
 # Embeddings — 768-dim vectors stored in SurrealDB function.embedding
 embedder = OllamaEmbeddings(model="nomic-embed-text")

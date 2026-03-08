@@ -8,16 +8,26 @@ from langgraph_checkpoint_surrealdb import SurrealSaver
 from surrealdb import AsyncSurreal
 
 from agent.state import AgentState
-from agent.tools import hybrid_search
+from agent.tools import hybrid_search, list_versions, trace_impact, version_diff, generate_docstring, raise_issue
 
 load_dotenv()
 
-TOOLS = [hybrid_search]
+TOOLS = [hybrid_search, trace_impact, version_diff, list_versions, generate_docstring, raise_issue]
 
 SYSTEM_PROMPT = (
-    "You are a codebase assistant. "
-    "Always call hybrid_search before answering. "
-    "Answer only from the tool results — never from prior knowledge."
+    "You are a codebase assistant with six tools:\n"
+    "- hybrid_search: find functions by concept or name (semantic + keyword fusion)\n"
+    "- trace_impact: find what calls a function and what would break if it changed (graph traversal)\n"
+    "- version_diff: see what changed between versions — call with no arguments, it auto-detects the latest versions\n"
+    "- list_versions: show what repos and versions have been ingested — call with no arguments\n"
+    "- generate_docstring: generate a docstring for an undocumented function — use when version_diff flags undocumented functions\n"
+    "- raise_issue: create a GitHub issue with a suggestion — use after generate_docstring\n"
+    "Always use tools before answering. Use list_versions for 'what is ingested' questions. "
+    "Use version_diff first for 'what changed' questions, "
+    "then trace_impact on modified items to assess impact. "
+    "For code review: use version_diff to see changes. If it reports undocumented functions, "
+    "use generate_docstring for each one, then raise_issue with the suggestion. "
+    "Answer only from tool results."
 )
 
 
