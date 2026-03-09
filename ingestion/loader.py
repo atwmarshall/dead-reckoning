@@ -277,17 +277,41 @@ async def load_file(
     class_count = 0
     edge_count = 0
 
-    # Batch-embed function docstrings via async Ollama client
+    # Batch-embed function docstrings via async Ollama client, reusing cached
+    # embeddings for functions whose source hasn't changed (same content_hash).
     embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
     embed_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     fns_with_docs = [(i, fn) for i, fn in enumerate(parsed["functions"]) if fn.get("docstring")]
     embeddings_map: dict[int, list[float]] = {}
     if fns_with_docs:
-        docs = [_strip_markdown(fn["docstring"]) for _, fn in fns_with_docs]
-        client = ollama_client.AsyncClient(host=embed_host)
-        response = await client.embed(model=embed_model, input=docs)
-        vecs = response.embeddings
-        embeddings_map = {i: vec for (i, _), vec in zip(fns_with_docs, vecs)}
+        # Check DB for existing embeddings by content_hash to avoid redundant Ollama calls
+        source_hashes = [fn.get("source_hash") for _, fn in fns_with_docs if fn.get("source_hash")]
+        cached: dict[str, list[float]] = {}
+        if source_hashes:
+            rows = await db.query(
+                "SELECT content_hash, embedding FROM `function` WHERE content_hash IN $hashes AND embedding IS NOT NONE LIMIT 100",
+                {"hashes": source_hashes},
+            )
+            for row in _get_rows(rows):
+                if row.get("content_hash") and row.get("embedding"):
+                    cached[row["content_hash"]] = row["embedding"]
+
+        # Split into cached hits and functions that need embedding
+        need_embed: list[tuple[int, dict]] = []
+        for i, fn in fns_with_docs:
+            sh = fn.get("source_hash")
+            if sh and sh in cached:
+                embeddings_map[i] = cached[sh]
+            else:
+                need_embed.append((i, fn))
+
+        if need_embed:
+            docs = [_strip_markdown(fn["docstring"]) for _, fn in need_embed]
+            client = ollama_client.AsyncClient(host=embed_host)
+            response = await client.embed(model=embed_model, input=docs)
+            vecs = response.embeddings
+            for (i, _), vec in zip(need_embed, vecs):
+                embeddings_map[i] = vec
 
     # Upsert functions + contains edges
     for idx, fn in enumerate(parsed["functions"]):
