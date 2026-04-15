@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -1127,6 +1128,13 @@ with st.sidebar:
             st.error(f"Error: {p.get('error', 'unknown')}")
         else:
             st.caption("Ready. Enter a repo path and click **Ingest**.")
+
+        # Auto-refresh while ingestion is active so background state changes
+        # (progress updates, interrupt flip to awaiting_resume, completion)
+        # surface in the UI without the user needing to click anything.
+        if status in ("running", "awaiting_resume", "stopping"):
+            time.sleep(1)
+            st.rerun()
 
         # ── Diff log ───────────────────────────────────────────────────
         log = list(st.session_state.diff_status_log)
