@@ -80,20 +80,25 @@ def _get_rows(result) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Graph enrichment (parent class + sibling functions)
+# Graph enrichment (parent class, siblings, call neighbourhood)
 # ---------------------------------------------------------------------------
 
+_CALL_NEIGHBOUR_LIMIT = 10
+
+
 async def _enrich_one(doc: dict) -> dict:
-    """Add graph context: inferred parent class and sibling function names."""
+    """Add graph context: parent class, sibling functions, and call neighbourhood
+    (immediate callers and callees traversed over `calls` edges)."""
     path = doc.get("path")
     if not path and isinstance(doc.get("file"), dict):
         path = doc["file"].get("path")
     lineno = doc.get("lineno")
     name = doc.get("name")
+    fn_id = doc.get("id")
     if not path:
         return doc
 
-    parent_class, siblings = await asyncio.gather(
+    tasks = [
         _query(
             """SELECT name, bases, lineno FROM `class`
                WHERE file.path = $path AND lineno < $lineno
@@ -106,13 +111,46 @@ async def _enrich_one(doc: dict) -> dict:
                LIMIT 20""",
             {"path": path, "class_name": doc.get("class_name"), "name": name},
         ),
-    )
+    ]
+    # Traverse `calls` edges from the result's own record id.
+    # (A name-based WHERE clause is blocked by the FULLTEXT index on function.name.)
+    if fn_id:
+        tasks.append(
+            _query(
+                """SELECT
+                     <-calls<-`function`.name      AS callers,
+                     <-calls<-`function`.file.path AS caller_files,
+                     ->calls->`function`.name      AS callees
+                   FROM $fn_id""",
+                {"fn_id": fn_id},
+            )
+        )
+
+    results = await asyncio.gather(*tasks)
+    parent_class, siblings = results[0], results[1]
+    neighbourhood = results[2] if fn_id else []
 
     pc_rows = _get_rows(parent_class)
     doc["_parent_class"] = pc_rows[0] if pc_rows else {}
     doc["_siblings"] = [r.get("name") for r in _get_rows(siblings) if r.get("name")]
+
+    nb_rows = _get_rows(neighbourhood)
+    nb = nb_rows[0] if nb_rows else {}
+    doc["_callers"] = _unique_names(nb.get("callers"))[:_CALL_NEIGHBOUR_LIMIT]
+    doc["_caller_files"] = _unique_names(nb.get("caller_files"))[:_CALL_NEIGHBOUR_LIMIT]
+    doc["_callees"] = _unique_names(nb.get("callees"))[:_CALL_NEIGHBOUR_LIMIT]
+
     doc["path"] = path
     return doc
+
+
+def _unique_names(value) -> list:
+    """Normalise a graph-traversal field to a deduplicated list of non-empty strings."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = [value]
+    return list(dict.fromkeys(v for v in value if v))
 
 
 async def _enrich_all(docs: list[dict]) -> list[dict]:
@@ -128,6 +166,8 @@ def _format(doc: dict) -> str:
 
     parent = doc.get("_parent_class") or {}
     siblings = doc.get("_siblings") or []
+    callers = doc.get("_callers") or []
+    callees = doc.get("_callees") or []
 
     lines = [
         f"function: {name}",
@@ -140,6 +180,10 @@ def _format(doc: dict) -> str:
         lines.append(f"class:    {cls_str}")
     if siblings:
         lines.append(f"siblings: {', '.join(siblings)}")
+    if callers:
+        lines.append(f"callers:  {', '.join(callers)}")
+    if callees:
+        lines.append(f"callees:  {', '.join(callees)}")
     if docstring:
         lines.append(f"docstring:          {docstring}")
     elif suggested:
