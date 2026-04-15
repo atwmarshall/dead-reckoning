@@ -128,8 +128,6 @@ uv run python demo/seed_demo.py
 uv run python demo/seed_demo.py --with-v2
 ```
 
-See [`demo/DEMO_SCRIPT.md`](./demo/DEMO_SCRIPT.md) for the exact live judging script.
-
 ---
 
 ## Repo structure
@@ -154,8 +152,7 @@ dead-reckoning/
 ├── ui/
 │   └── app.py             # Streamlit: graph viz + chat interface
 ├── demo/
-│   ├── seed_demo.py       # Pre-index the demo repo cleanly
-│   └── DEMO_SCRIPT.md     # Exact steps + narration for live judging
+│   └── seed_demo.py       # Pre-index the demo repo cleanly
 ├── tests/
 │   ├── test_parser.py     # Unit tests (offline, no DB)
 │   └── test_tools.py      # Integration tests (live SurrealDB + Ollama)
@@ -172,7 +169,6 @@ dead-reckoning/
 | Doc | Purpose |
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Schema design, integration points, test criteria |
-| [demo/DEMO_SCRIPT.md](./demo/DEMO_SCRIPT.md) | Live demo script: exactly what to type and say |
 
 ---
 
