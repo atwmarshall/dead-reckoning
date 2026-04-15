@@ -313,6 +313,9 @@ async def load_file(
             for (i, _), vec in zip(need_embed, vecs):
                 embeddings_map[i] = vec
 
+        reused = len(fns_with_docs) - len(need_embed)
+        print(f"  Embeddings: reused {reused} cached, embedded {len(need_embed)} new")
+
     # Upsert functions + contains edges
     for idx, fn in enumerate(parsed["functions"]):
         class_name = fn.get("class_name")
