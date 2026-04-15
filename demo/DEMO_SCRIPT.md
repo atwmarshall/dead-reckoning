@@ -231,99 +231,155 @@ Terminal 2:    Ready for SurrealQL demo queries (scratch queries above)
 
 ---
 
-## The script
+## The script (90 seconds, tight)
+
+> **Screen rule:** judges should always be looking at something interesting. Never leave them staring at a loading spinner — talk through it or switch screens.
 
 ---
 
-**[0:00 — OPEN: problem + v1 graph]**
+### **[0:00–0:10] OPEN — v1 knowledge graph**
 
-*Show graph tab — v1 fixture indexed, files/functions/classes visible with call edges.*
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Knowledge Graph** tab | Main canvas — the graph visualisation | First impression: "this tool does something visual and useful" |
+
+**What's on screen:** v1 fixture graph — files (large nodes), functions (small nodes), call edges (arrows), class groupings. Pre-loaded, no waiting.
+
+**Your hands:** Mouse on the graph. Pan slowly left-to-right so judges see the full structure. Hover over a call edge to show the tooltip.
 
 Say:
-> "Every developer knows this moment — new codebase, no idea what talks to what. Dead Reckoning turns any Python repo into a queryable knowledge graph."
-
-*Point at nodes and edges*
-
-Say:
-> "We pointed our agent at a Python repo and it parsed every file into a SurrealDB knowledge graph. Files, functions, classes, call relationships — all stored as nodes and edges."
+> "Every developer knows this moment — new codebase, no idea what talks to what. Dead Reckoning turns any Python repo into a queryable knowledge graph. Files, functions, classes, call relationships — all stored as nodes and edges in SurrealDB."
 
 ---
 
-**[0:10 — QUERY: agent on the codebase]**
+### **[0:10–0:25] QUERY — agent finds slugify + dependencies**
 
-*Switch to "Ask the Codebase" tab. Type:*
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Ask the Codebase** tab | Chat input at bottom, then results area | Shows the agent is intelligent, not just a pretty graph |
+
+**Your hands:** Click "Ask the Codebase" tab. The chat input is at the bottom. Type (pre-typed, just paste):
+
 ```
 find the slugify function and what depends on it
 ```
 
-Say (while agent responds):
-> "The agent uses hybrid search — SurrealDB's `search::rrf()` fuses vector similarity and BM25 keyword matching in one query inside the database. Then it chains into trace_impact — a multi-hop graph traversal to find everything that depends on that function."
-
-*Results appear — function names, file paths, callers*
+Hit Enter. While the agent thinks (~3-5s), talk:
 
 Say:
-> "Real functions, real call chains, real impact analysis. This is structural reasoning — 'what calls X, and what calls that' — which context windows can't do. You need the graph."
+> "The agent uses hybrid search — vector similarity and BM25 keyword matching fused with Reciprocal Rank Fusion, all inside SurrealDB. Then it chains into trace_impact — a multi-hop graph traversal to find everything that depends on that function."
+
+**Results appear** — function names, file paths, callers listed.
+
+Say:
+> "Structural reasoning — 'what calls X, and what calls that' — context windows can't do this. You need the graph."
+
+**Don't linger.** As soon as results are visible, move on.
 
 ---
 
-**[0:30 — VERSIONED DIFF: ingest v2 live]**
+### **[0:25–0:50] DIFF — ingest v2 live, interrupt, resume**
 
-*Trigger v2 ingestion — click the quick-select for v2, click Ingest.*
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Sidebar** (left panel) | Ingestion controls, quick-select buttons | Shows live pipeline + LangGraph interrupt — the "wow" moment |
+
+**Your hands:** Move to the sidebar. Click the v2 quick-select button, then click **Ingest**.
 
 Say:
 > "Now watch what happens when code changes. Version one is indexed, let's ingest version two."
 
-*Conflict dialog appears: "A previous version exists"*
-
-> "It detects the previous version automatically."
-
-*Click "Add new version" — ingestion runs — pipeline pauses at diff review (interrupt)*
+**[0:30]** Conflict dialog appears: "A previous version exists."
 
 Say:
-> "The ingestion pipeline just paused. It's a LangGraph interrupt — the agent checkpointed its state to SurrealDB and is waiting for us to review the diff before continuing. This is resumable — we could kill the process, come back tomorrow, and it picks up right here."
+> "It detects the previous version automatically."
 
-*Click Resume — graph updates — nodes turn green, yellow, red, blue*
+**Your hands:** Click **"Add new version"**. Ingestion runs — progress bar moves — then **pipeline pauses**.
+
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Sidebar** | "Diff ready — review the graph, then click Resume" status + Resume button | Proves LangGraph interrupt + SurrealDB checkpoint persistence |
+
+**[0:35]** The sidebar shows the green **Resume** button and diff log.
+
+Say:
+> "The ingestion pipeline just paused — a LangGraph interrupt. The agent checkpointed its state to SurrealDB. We could kill the process, come back tomorrow, and resume right here."
+
+**Your hands:** Click **Resume**. Then immediately click the **Knowledge Graph** tab to watch it update.
+
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Knowledge Graph** tab | Graph canvas — nodes changing colour | Visual payoff: green/yellow/red/blue = version-aware graph |
+
+**[0:45]** Graph updates — nodes turn green (unchanged), yellow (modified), red (deleted), blue (new).
 
 Say:
 > "Green: unchanged. Yellow: modified. Red: deleted. Blue: new. Not just files — individual functions are diff'd. The knowledge graph is now version-aware."
 
 ---
 
-**[0:55 — AGENT: automated code review chain]**
+### **[0:50–1:15] AGENT — 3-tool chain: diff → docstring → GitHub issue**
 
-*Switch to "Ask the Codebase" tab. Type:*
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Ask the Codebase** tab | Chat input, then watch tool calls appear | The headline demo moment: autonomous multi-tool chain |
+
+**Your hands:** Click "Ask the Codebase" tab. Paste:
+
 ```
 What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.
 ```
 
-Say (while agent responds):
-> "Watch the agent chain three tools. First version_diff — reads diff_status from the knowledge graph, spots new files and flags undocumented functions. Then generate_docstring — reads the function source from SurrealDB, sends it to the LLM for a docstring. Then raise_issue — files a GitHub issue with the suggestion. Three tools, one query. The agent decided the chain — LangGraph conditional routing."
-
-*Point at tool calls in the response — version_diff → generate_docstring → raise_issue. Show the GitHub issue URL.*
-
----
-
-**[1:20 — LANGSMITH: show the trace]**
-
-*Switch to LangSmith tab — find the trace for the query*
+Hit Enter. While the agent works (~10-15s), narrate the tool calls as they appear:
 
 Say:
-> "Every step is observable. LangGraph run — LLM reasoning, version_diff fires, generate_docstring chains in, raise_issue follows. Three tool calls, arguments, results — fully auditable in LangSmith."
+> "Watch the agent chain three tools. First — version_diff reads diff_status from the knowledge graph, spots new files, flags undocumented functions."
 
-*Point at the 3-tool call sequence.*
+*version_diff result appears*
+
+> "Then — generate_docstring reads the function source from SurrealDB and sends it to the LLM for a docstring."
+
+*generate_docstring result appears*
+
+> "Then — raise_issue files a GitHub issue with the suggestion. Three tools, one query. The agent decided the chain — LangGraph conditional routing."
+
+*raise_issue result appears with GitHub URL*
+
+**Your hands:** Point at / scroll to the GitHub issue URL in the response.
 
 ---
 
-**[1:40 — CLOSE: summary]**
+### **[1:15–1:25] LANGSMITH — show the trace**
 
-*Switch back to Streamlit — show the diff-coloured graph one more time*
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Browser tab 2 → **LangSmith** | Trace waterfall — 3-tool sequence | Proves observability: every step is auditable |
+
+**Your hands:** Switch to the LangSmith browser tab (pre-opened). Click the most recent trace. The waterfall shows the 3-tool sequence.
+
+Say:
+> "Every step is observable. LLM reasoning, version_diff, generate_docstring, raise_issue — fully auditable in LangSmith."
+
+**Point at** the 3 tool call spans in the waterfall. Don't click into them — just show the sequence.
+
+---
+
+### **[1:25–1:30] CLOSE — back to graph, summary**
+
+| Screen | Where to look | Why |
+|--------|--------------|-----|
+| Streamlit → **Knowledge Graph** tab | Diff-coloured graph | End on the visual: version-aware knowledge graph |
+
+**Your hands:** Switch back to Streamlit. Click Knowledge Graph tab. The diff-coloured graph is still visible.
 
 Say:
 > "One query: discovered a problem, generated a fix, filed an issue. SurrealDB stores the graph, vectors, diffs, and agent state. Dead Reckoning — navigate any codebase."
 
 ---
 
-**[2:00 — DONE]**
+### **[1:30 — DONE]**
+
+30 seconds of buffer for slow responses or judge questions during the demo.
 
 ---
 
@@ -461,6 +517,8 @@ Every demo moment scores in at least one category. Nothing is filler. The 3-tool
 **If the conflict dialog doesn't appear:** v1 ingestion_id not in session state. Refresh, re-ingest v1 quickly (fixture repo is fast), then ingest v2.
 
 **If the SurrealQL terminal query fails:** Skip it, stay in the UI. The agent tool calls prove SurrealDB usage too. Don't debug live.
+
+**If the agent returns "timed out while waiting for handshake response":** SurrealDB Cloud transient connection drop. Just resubmit the same query — it works on retry. Say "cloud database connection reset — retrying" and keep talking.
 
 **If Streamlit crashes entirely:**
 ```bash

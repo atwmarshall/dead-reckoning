@@ -117,9 +117,16 @@ def _has_more(state: IngestionState) -> str:
 
 
 def _create_call_edges(state: IngestionState) -> dict:
-    """Second-pass node: create calls edges after all files are ingested."""
-    disk = state.get("disk_path") or state["repo_path"]
-    parsed_files = parse_repo(disk)
+    """Second-pass node: create calls edges after all files are ingested.
+
+    Only re-parses processed files (not the entire repo) to avoid redundant work.
+    """
+    processed = state.get("processed_files") or []
+    if not processed:
+        logger.info("No processed files — skipping call edges")
+        return {}
+
+    parsed_files = [parse_file(f) for f in processed]
 
     async def _load():
         async with get_db_client() as db:
