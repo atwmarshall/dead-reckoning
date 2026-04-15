@@ -153,7 +153,13 @@ def _unique_names(value) -> list:
     return list(dict.fromkeys(v for v in value if v))
 
 
+@traceable(name="graph_enrich", run_type="retriever")
 async def _enrich_all(docs: list[dict]) -> list[dict]:
+    """Parallel graph enrichment over the top hybrid_search results.
+
+    Each doc is enriched with parent class, sibling functions, and the
+    immediate `calls`-edge neighbourhood (callers + callees).
+    """
     return await asyncio.gather(*[_enrich_one(doc) for doc in docs])
 
 
@@ -196,12 +202,17 @@ def _format(doc: dict) -> str:
 # Tool 1: hybrid_search — SurrealDB native RRF (vector + BM25 fusion)
 # ---------------------------------------------------------------------------
 
-@traceable(name="hybrid_search", run_type="retriever", process_outputs=_clean)
-def _do_hybrid_search(query: str) -> list[str]:
+@traceable(name="embed_query", run_type="embedding")
+def _embed_query(query: str) -> tuple[list[float], str]:
+    """Embed the user's query and derive the BM25 keyword.
+
+    Returns (embedding_vector, keyword). The keyword is the longest non-stopword
+    token in the query; camelCase/PascalCase identifiers are split so
+    "DigestAuth" contributes ["Digest", "Auth"] to the candidate set.
+    """
     vec = _embedder.embed_query(query)
     raw_terms = [t for t in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]+", query)
                  if t.lower() not in _STOP_WORDS and len(t) > 2]
-    # Split camelCase/PascalCase identifiers so "DigestAuth" → ["Digest", "Auth"]
     expanded = []
     for t in raw_terms:
         parts = [p for p in re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', t)
@@ -209,8 +220,18 @@ def _do_hybrid_search(query: str) -> list[str]:
         expanded.extend(parts if parts else [t])
     terms = expanded or raw_terms
     keyword = max(terms, key=len) if terms else query.split()[0]
+    return vec, keyword
 
-    rows = asyncio.run(_query_raw(
+
+@traceable(name="rrf_retrieve", run_type="retriever")
+def _rrf_retrieve(vec: list[float], keyword: str) -> list[dict]:
+    """Run the native SurrealDB RRF query: HNSW vector + BM25 full-text, fused by rank.
+
+    Returns the fused result rows (top-5 by default). Runs as a single
+    multi-statement SurrealQL script — vector search, keyword search, and
+    rank fusion all happen inside the database.
+    """
+    return asyncio.run(_query_raw(
         """
         LET $vs = SELECT *, file.path AS path,
                          vector::similarity::cosine(embedding, $vec) AS score
@@ -226,6 +247,11 @@ def _do_hybrid_search(query: str) -> list[str]:
         {"vec": vec, "keyword": keyword},
     ))
 
+
+@traceable(name="hybrid_search", run_type="retriever", process_outputs=_clean)
+def _do_hybrid_search(query: str) -> list[str]:
+    vec, keyword = _embed_query(query)
+    rows = _rrf_retrieve(vec, keyword)
     enriched = asyncio.run(_enrich_all(rows[:5]))
     results = [_format(doc) for doc in enriched]
     if len(rows) > 5:
