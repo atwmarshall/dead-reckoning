@@ -84,8 +84,8 @@ uv venv
 uv sync
 
 # 2. Pull Ollama models
-ollama pull llama3.2:3b       # LLM for dev/testing
-ollama pull nomic-embed-text # embeddings
+ollama pull gemma4:e2b        # LLM — clean tool calling at ~7GB
+ollama pull nomic-embed-text  # embeddings
 
 # 3. Configure environment
 cp .env.example .env
@@ -134,7 +134,7 @@ uv run python demo/seed_demo.py --with-v2
 
 A scripted end-to-end tour you can run locally. Uses the included `tests/fixtures/sample_repo/v1` and `v2` so it works offline, no external repo required.
 
-> **Model note:** tool calling requires a model that produces structured tool calls reliably. Small models (including `llama3.2:3b`) tend to emit tool invocations as plain text instead of calling them. For this walkthrough set `OLLAMA_MODEL=gpt-oss:20b` in your `.env`.
+> **Model note:** the default is now `gemma4:e2b` (~7 GB) — recent enough to produce clean structured tool calls and small enough to run on a laptop. Older small models such as `llama3.2:3b` will work most of the time but can occasionally emit tool calls as plain text or with malformed arguments, which trips up the multi-tool chain in step 4. If you hit that, fall back to `gpt-oss:20b`.
 
 ### 1. Seed the v1 fixture
 
