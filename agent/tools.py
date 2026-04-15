@@ -94,10 +94,11 @@ async def _enrich_one(doc: dict) -> dict:
         path = doc["file"].get("path")
     lineno = doc.get("lineno")
     name = doc.get("name")
+    fn_id = doc.get("id")
     if not path:
         return doc
 
-    parent_class, siblings, neighbourhood = await asyncio.gather(
+    tasks = [
         _query(
             """SELECT name, bases, lineno FROM `class`
                WHERE file.path = $path AND lineno < $lineno
@@ -110,17 +111,24 @@ async def _enrich_one(doc: dict) -> dict:
                LIMIT 20""",
             {"path": path, "class_name": doc.get("class_name"), "name": name},
         ),
-        _query(
-            """SELECT
-                 <-calls<-`function`.name      AS callers,
-                 <-calls<-`function`.file.path AS caller_files,
-                 ->calls->`function`.name      AS callees
-               FROM `function`
-               WHERE name = $name AND file.path = $path
-               LIMIT 1""",
-            {"name": name, "path": path},
-        ),
-    )
+    ]
+    # Traverse `calls` edges from the result's own record id.
+    # (A name-based WHERE clause is blocked by the FULLTEXT index on function.name.)
+    if fn_id:
+        tasks.append(
+            _query(
+                """SELECT
+                     <-calls<-`function`.name      AS callers,
+                     <-calls<-`function`.file.path AS caller_files,
+                     ->calls->`function`.name      AS callees
+                   FROM $fn_id""",
+                {"fn_id": fn_id},
+            )
+        )
+
+    results = await asyncio.gather(*tasks)
+    parent_class, siblings = results[0], results[1]
+    neighbourhood = results[2] if fn_id else []
 
     pc_rows = _get_rows(parent_class)
     doc["_parent_class"] = pc_rows[0] if pc_rows else {}
