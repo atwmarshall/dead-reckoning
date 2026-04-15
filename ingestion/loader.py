@@ -289,7 +289,7 @@ async def load_file(
         cached: dict[str, list[float]] = {}
         if source_hashes:
             rows = await db.query(
-                "SELECT content_hash, embedding FROM `function` WHERE content_hash IN $hashes AND embedding IS NOT NONE LIMIT 100",
+                "SELECT content_hash, embedding FROM `function` WHERE content_hash IN $hashes AND embedding IS NOT NONE",
                 {"hashes": source_hashes},
             )
             for row in _get_rows(rows):
