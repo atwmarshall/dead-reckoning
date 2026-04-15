@@ -405,11 +405,15 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
 
     # --- Function calls edges ---
     if all_callee_names:
-        # Batch-fetch all function nodes whose names match any callee
-        rows = await db.query(
-            "SELECT id, name FROM `function` WHERE name IN $names",
-            {"names": list(all_callee_names)},
-        )
+        # Fetch all function nodes in this ingestion and filter in Python.
+        # A direct `WHERE name IN $names` clause is intercepted by the BM25
+        # FULLTEXT index on function.name and returns zero rows.
+        query = "SELECT id, name FROM `function`"
+        params: dict = {}
+        if ingestion_id:
+            query += " WHERE ingestion_id = $iid"
+            params["iid"] = ingestion_id
+        rows = await db.query(query, params)
         # Unwrap SurrealDB response format
         if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "result" in rows[0]:
             rows = rows[0].get("result") or []
@@ -418,6 +422,8 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
         callee_map: dict[str, list[str]] = {}
         for row in (rows or []):
             name = row.get("name")
+            if name not in all_callee_names:
+                continue
             rid = str(row.get("id", ""))
             bare = rid.split(":")[-1] if ":" in rid else rid
             if name and bare:
