@@ -560,7 +560,7 @@ def generate_docstring(function_name: str, file_path: str = "") -> str:
 def raise_issue(title: str, body: str) -> str:
     """Create a GitHub issue with a code improvement suggestion.
     Pass a title and markdown body. Use after generate_docstring to file the suggestion."""
-    repo = os.getenv("GITHUB_REPO", "archiemarshall/dead-reckoning")
+    repo = os.getenv("GITHUB_REPO", "atwmarshall/dead-reckoning")
 
     result = subprocess.run(
         ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body],
