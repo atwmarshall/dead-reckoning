@@ -7,7 +7,27 @@ These are integration tests — they require:
 
 Run: uv run pytest tests/test_tools.py -v
 """
+import asyncio
+
 import pytest
+
+
+def _has_diff_data() -> bool:
+    """Probe the DB once at collection time to decide whether v2/diff tests should run."""
+    try:
+        from agent.tools import _get_rows, _query
+        rows = _get_rows(asyncio.run(_query(
+            "SELECT count() FROM `function` WHERE diff_status IS NOT NONE GROUP ALL"
+        )))
+        return bool(rows) and (rows[0].get("count") or 0) > 0
+    except Exception:
+        return False
+
+
+_NEEDS_DIFF = pytest.mark.skipif(
+    not _has_diff_data(),
+    reason="No v2 diff data in DB. Run: uv run python demo/seed_demo.py --with-v2",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -104,18 +124,21 @@ class TestTraceImpact:
 # ---------------------------------------------------------------------------
 
 class TestVersionDiff:
+    @_NEEDS_DIFF
     def test_returns_summary(self):
         from agent.tools import version_diff
         result = version_diff.invoke({"module": ""})
         assert isinstance(result, str)
         assert "Version Diff Summary" in result
 
+    @_NEEDS_DIFF
     def test_shows_file_statuses(self):
         from agent.tools import version_diff
         result = version_diff.invoke({"module": ""})
         has_status = ("DELETED" in result or "MODIFIED" in result or "UNCHANGED" in result)
         assert has_status, "Should show at least one file status category"
 
+    @_NEEDS_DIFF
     def test_shows_total_count(self):
         from agent.tools import version_diff
         result = version_diff.invoke({"module": ""})

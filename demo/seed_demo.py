@@ -118,8 +118,8 @@ async def ingest_version(
             print(f"  [{i}/{total}] {short}")
 
         # Create call edges
-        call_count = await load_calls(parsed_files, db, ingestion_id=ingestion_id)
-        print(f"  Call edges: {call_count}")
+        edges = await load_calls(parsed_files, db, ingestion_id=ingestion_id)
+        print(f"  Edges: calls={edges['calls']}, imports={edges['imports']}")
 
         # Finalize
         await finalize_ingestion(db, ingestion_id, total)

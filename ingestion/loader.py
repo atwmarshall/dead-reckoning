@@ -389,11 +389,11 @@ async def load_file(
 # ---------------------------------------------------------------------------
 
 @traceable(name="load_calls", run_type="chain")
-async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: str = "") -> int:
+async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: str = "") -> dict:
     """Create function→calls→function edges and file→imports→file edges (second pass).
 
     Must be called after all files are loaded so callee/importee nodes already exist.
-    Returns the number of edges created.
+    Returns a dict ``{"calls": int, "imports": int}`` with per-edge-type counts.
     """
     # Collect all unique callee names referenced across every function
     all_callee_names: set[str] = set()
@@ -401,7 +401,8 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
         for fn in parsed.get("functions", []):
             all_callee_names.update(fn.get("calls") or [])
 
-    edge_count = 0
+    calls_count = 0
+    imports_count = 0
 
     # --- Function calls edges ---
     if all_callee_names:
@@ -440,7 +441,7 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
                             "INSERT RELATION INTO calls { id: type::record('calls', $eid), in: type::record('function', $caller), out: type::record('function', $callee) } ON DUPLICATE KEY UPDATE in = in",
                             {"eid": eid, "caller": caller_bare, "callee": callee_bare},
                         )
-                        edge_count += 1
+                        calls_count += 1
 
     # --- File imports edges ---
     # Build a map of module_name → file bare ID for matching imports to files
@@ -462,6 +463,6 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
                     "INSERT RELATION INTO imports { id: type::record('imports', $eid), in: type::record('file', $from_fid), out: type::record('file', $to_fid) } ON DUPLICATE KEY UPDATE in = in",
                     {"eid": eid, "from_fid": from_fid, "to_fid": to_fid},
                 )
-                edge_count += 1
+                imports_count += 1
 
-    return edge_count
+    return {"calls": calls_count, "imports": imports_count}

@@ -23,7 +23,7 @@ async def seed(repo_path: str, *, enrich: bool = True) -> None:
 
     print("Creating call edges ...")
     async with get_db_client() as db:
-        call_edges = await load_calls(files, db)
+        edges = await load_calls(files, db)
 
     enriched = 0
     if enrich:
@@ -36,7 +36,7 @@ async def seed(repo_path: str, *, enrich: bool = True) -> None:
         f"Functions processed: {totals['functions']} | "
         f"Classes processed: {totals['classes']} | "
         f"Edges processed: {totals['edges']} | "
-        f"Call edges: {call_edges} | "
+        f"Call edges: {edges['calls']} | Import edges: {edges['imports']} | "
         f"Enriched: {enriched} "
         f"(DB deduplicates by name+file — stored count will be lower)"
     )

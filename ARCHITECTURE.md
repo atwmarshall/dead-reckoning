@@ -272,6 +272,13 @@ SELECT name FROM `function`
 WHERE file.path = $path AND class_name = $class_name AND name != $name
 LIMIT 20;
 
+-- Calls-edge neighbourhood for a hybrid_search result (enrichment)
+SELECT
+  <-calls<-`function`.name      AS callers,
+  <-calls<-`function`.file.path AS caller_files,
+  ->calls->`function`.name      AS callees
+FROM $fn_id;
+
 -- Version diff: files with diff status (version_diff tool)
 SELECT path, diff_status, ->contains->`function`.name AS functions
 FROM file WHERE diff_status IS NOT NONE ORDER BY diff_status;
@@ -342,8 +349,7 @@ stateDiagram-v2
     review_diff --> create_call_edges: no files remaining
     process_file --> process_file: more files remaining
     process_file --> create_call_edges: all files processed
-    create_call_edges --> enrich_summaries
-    enrich_summaries --> finalize
+    create_call_edges --> finalize
     finalize --> [*]
 
     state initialize {
@@ -389,7 +395,7 @@ class IngestionState(TypedDict):
 
 Six tools are exposed to the query agent:
 
-1. **hybrid_search** — Combines HNSW vector similarity and BM25 full-text matching via SurrealDB's native `search::rrf()` in a single SurrealQL query. Results are enriched with parent class and sibling functions via graph traversal.
+1. **hybrid_search** — Combines HNSW vector similarity and BM25 full-text matching via SurrealDB's native `search::rrf()` in a single SurrealQL query. Results are enriched with parent class, sibling functions, and immediate `calls`-edge neighbourhood (callers + callees) in parallel.
 2. **trace_impact** — Multi-hop graph traversal (`<-calls<-function<-calls<-function`) finding direct and transitive callers of any function. Two hops through the calls graph in one query.
 3. **version_diff** — Auto-detects versions from the `ingestion` table, then reads `diff_status` (green/yellow/red) from the versioned knowledge graph at both file and function granularity. Flags undocumented functions.
 4. **list_versions** — Queries the `ingestion` table to show all indexed repositories, their versions, file counts, timestamps, and snapshot status. Lightweight — useful for "what's been ingested?" without triggering a full diff.
@@ -411,22 +417,23 @@ flowchart TD
 
     ENR -->|doc + path + lineno| PC["SurrealQL: parent class\n(lineno proximity ordering)"]
     ENR -->|doc + class_name| SB["SurrealQL: sibling methods\n(same file + class_name)"]
+    ENR -->|doc record id| CE["SurrealQL: calls-edge traversal\n<-calls<-function (callers)\n->calls->function (callees)"]
 
     PC --> FMT[_format]
     SB --> FMT
+    CE --> FMT
     FMT -->|structured text blocks| LLM[LLM context window]
 ```
 
 ### LangSmith Observability
 
-Every retrieval sub-step is decorated with `@traceable`, producing a nested trace tree in LangSmith:
+Each top-level tool is wrapped in a LangSmith `@traceable` decorator, and LangChain's Ollama / SurrealDB integrations contribute automatic child spans. The resulting trace tree looks roughly like:
 
 ```
 LangGraph run
 └── llm_node
 └── tools_node
-    ├── hybrid_search      [retriever] native RRF (vector + BM25)
-    │   └── graph_enrich x N  [retriever] parent_class, siblings
+    ├── hybrid_search      [retriever] native RRF (vector + BM25) + graph enrichment
     ├── trace_impact       [retriever] multi-hop calls graph traversal
     ├── version_diff       [retriever] diff_status from versioned graph + ingestion auto-detect
     ├── list_versions      [retriever] ingestion history from SurrealDB
@@ -504,7 +511,7 @@ The five boundaries where things break. Each must be verified independently befo
 SurrealDB handles graph-style data (RELATE, traversal) and row-style data (checkpoint tables) in the same instance. This avoids a second database and demonstrates SurrealDB doing two qualitatively different things — knowledge graph queries and transactional agent state — which directly addresses both SurrealDB judging criteria (structured memory + persistent agent state).
 
 **Why hybrid search (RRF) instead of pure vector search?**
-Codebases have exact names (function names, class names) that benefit from keyword matching, and semantic concepts (what does authentication do?) that benefit from vector similarity. RRF merges both ranked lists without needing to tune a weighting parameter. The exact-name bonus ensures that searching "DigestAuth" finds `DigestAuth` even if semantic similarity is low.
+Codebases have exact names (function names, class names) that benefit from keyword matching, and semantic concepts (what does authentication do?) that benefit from vector similarity. RRF merges both ranked lists without needing to tune a weighting parameter. To make identifier queries like "DigestAuth" survive, the keyword extraction step splits camelCase/PascalCase tokens before BM25 runs, so `DigestAuth` is searched as the constituent parts `Digest`/`Auth` in addition to the literal string.
 
 **Why graph enrichment after retrieval?**
 The LLM needs context beyond just a docstring — which class a function belongs to and what sibling methods exist gives the model enough structure to reason about code architecture. This context comes from SurrealDB graph queries (lineno-ordered class proximity, shared class_name siblings), not embeddings.
