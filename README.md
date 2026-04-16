@@ -157,10 +157,6 @@ uv run python demo/seed_demo.py --with-v2
   <img src="docs/gifs/multi-tool.gif" alt="Multi-tool chain — version_diff, generate_docstring, raise_issue" width="720"/>
 </p>
 
-<p align="center">
-  <img src="docs/gifs/langsmith.gif" alt="LangSmith trace — full observability of every agent step" width="720"/>
-</p>
-
 > **[Full scripted walkthrough →](docs/DEMO.md)** — step-by-step instructions using the included fixture repos, no external dependencies.
 
 ---
@@ -209,6 +205,16 @@ dead-reckoning/
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Schema design, integration points, test criteria |
 | [docs/DEMO.md](./docs/DEMO.md) | Scripted 3-minute demo walkthrough |
+
+---
+
+## Observability
+
+Every agent step — tool calls, graph traversals, embedding lookups, LLM reasoning — is traced as nested spans in LangSmith.
+
+<p align="center">
+  <img src="docs/gifs/langsmith.gif" alt="LangSmith trace — full observability of every agent step" width="720"/>
+</p>
 
 ---
 
