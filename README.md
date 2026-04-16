@@ -13,6 +13,12 @@
   <img src="docs/gifs/demo.gif" alt="DeadReckoning demo — hybrid search, version diffing, multi-tool chain, LangSmith trace" width="720"/>
 </p>
 
+<!-- MP4 alternative (smaller file, higher quality, but requires click to play):
+<p align="center">
+  <video src="docs/gifs/demo.mp4" width="720" autoplay loop muted playsinline></video>
+</p>
+-->
+
 `dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with six specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
 
 Built at the LangChain x SurrealDB London Hackathon, March 2026.
