@@ -104,6 +104,8 @@
   <circle cx="425" cy="400" r="7" fill="#1E88E5"/>
   <text x="438" y="404" fill="#D1D5DB" font-size="11">Added</text>
 
+  <line x1="488" y1="386" x2="488" y2="414" stroke="#4B5563" stroke-width="1"/>
+
   <circle cx="505" cy="400" r="7" fill="#42A5F5"/>
   <text x="518" y="404" fill="#D1D5DB" font-size="11">File</text>
 
