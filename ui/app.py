@@ -733,7 +733,9 @@ def _extract_context_refs(messages: list) -> list[dict]:
     return []
 
 
-async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[list, list, str]:
+async def _build_context_graph_async(
+    refs: list[dict], one_hop: bool, ingestion_id: str | None = None,
+) -> tuple[list, list, str]:
     names = list({r["function"] for r in refs if r.get("function")})
     file_paths = list({r["file"] for r in refs if r.get("file")})
     raw_class_strs = [r["class"] for r in refs if r.get("class")]
@@ -742,37 +744,40 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
     if not names or not file_paths:
         return [], [], ""
 
+    iid_filter = " AND ingestion_id = $iid" if ingestion_id else ""
+    iid_param = {"iid": ingestion_id} if ingestion_id else {}
+
     async with get_db_client() as db:
         fn_rows = _get_rows(await db.query(
             "SELECT id, name, class_name, file.id AS file_id, file.path AS file_path "
-            "FROM `function` WHERE name IN $names AND file.path IN $file_paths",
-            {"names": names, "file_paths": file_paths},
+            f"FROM `function` WHERE name IN $names AND file.path IN $file_paths{iid_filter}",
+            {"names": names, "file_paths": file_paths, **iid_param},
         ))
         file_rows = _get_rows(await db.query(
-            "SELECT id, path FROM file WHERE path IN $file_paths",
-            {"file_paths": file_paths},
+            f"SELECT id, path FROM file WHERE path IN $file_paths{iid_filter}",
+            {"file_paths": file_paths, **iid_param},
         ))
         class_rows = []
         if class_names:
             class_rows = _get_rows(await db.query(
-                "SELECT id, name FROM `class` WHERE name IN $class_names AND file.path IN $file_paths",
-                {"class_names": class_names, "file_paths": file_paths},
+                f"SELECT id, name FROM `class` WHERE name IN $class_names AND file.path IN $file_paths{iid_filter}",
+                {"class_names": class_names, "file_paths": file_paths, **iid_param},
             ))
         contains_rows = _get_rows(await db.query(
-            "SELECT in, out FROM contains WHERE in.path IN $file_paths",
-            {"file_paths": file_paths},
+            f"SELECT in, out FROM contains WHERE in.path IN $file_paths{iid_filter}",
+            {"file_paths": file_paths, **iid_param},
         )) if file_paths else []
 
         hop_fn_rows: list[dict] = []
         hop_class_rows: list[dict] = []
         if one_hop and file_paths:
             hop_fn_rows = _get_rows(await db.query(
-                "SELECT id, name, class_name FROM `function` WHERE file.path IN $file_paths",
-                {"file_paths": file_paths},
+                f"SELECT id, name, class_name FROM `function` WHERE file.path IN $file_paths{iid_filter}",
+                {"file_paths": file_paths, **iid_param},
             ))
             hop_class_rows = _get_rows(await db.query(
-                "SELECT id, name FROM `class` WHERE file.path IN $file_paths",
-                {"file_paths": file_paths},
+                f"SELECT id, name FROM `class` WHERE file.path IN $file_paths{iid_filter}",
+                {"file_paths": file_paths, **iid_param},
             ))
 
     nodes: list[Node] = []
@@ -842,8 +847,10 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
     return nodes, edges, query_str
 
 
-def _build_context_graph(refs: list[dict], one_hop: bool) -> tuple[list, list, str]:
-    return asyncio.run(_build_context_graph_async(refs, one_hop))
+def _build_context_graph(
+    refs: list[dict], one_hop: bool, ingestion_id: str | None = None,
+) -> tuple[list, list, str]:
+    return asyncio.run(_build_context_graph_async(refs, one_hop, ingestion_id))
 
 
 # ── Session-state initialisation ───────────────────────────────────────────
@@ -1066,7 +1073,7 @@ if st.session_state.theme == "light":
 def _conflict_dialog() -> None:
     pending = st.session_state.pending_ingest
     if not pending:
-        st.rerun()
+        st.rerun(scope="app")
         return
 
     existing = pending["existing"]
@@ -1086,20 +1093,20 @@ def _conflict_dialog() -> None:
         if st.button("Add new version", use_container_width=True, type="primary"):
             _start_ingestion(pending, prev_ingestion_id=str(latest["id"]))
             st.session_state.pending_ingest = None
-            st.rerun()
+            st.rerun(scope="app")
 
     with col2:
         if st.button("Replace latest", use_container_width=True):
             _delete_and_start(pending, del_ingestion_id=str(latest["id"]))
             st.session_state.pending_ingest = None
-            st.rerun()
+            st.rerun(scope="app")
 
     with col3:
         if st.button("Abort", use_container_width=True):
             if pending.get("cleanup_fn"):
                 pending["cleanup_fn"]()
             st.session_state.pending_ingest = None
-            st.rerun()
+            st.rerun(scope="app")
 
 
 # Show dialog if pending
@@ -1636,7 +1643,8 @@ with tab_chat:
 
             try:
                 nodes, edges, query_str = _build_context_graph(
-                    st.session_state.context_refs, one_hop
+                    st.session_state.context_refs, one_hop,
+                    st.session_state.selected_ingestion_id,
                 )
                 st.session_state.ctx_graph_nodes = nodes
                 st.session_state.ctx_graph_edges = edges
