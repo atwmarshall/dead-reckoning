@@ -68,6 +68,8 @@ Ingest a second version of the same repo and the graph diffs itself — every no
   <img src="docs/version-diff.svg" alt="Version diff — function-level change detection" width="720"/>
 </p>
 
+#### In action — ingesting v2 and diffing the graph
+
 <p align="center">
   <img src="docs/gifs/version-diff.gif" alt="V2 ingestion — diff mode with colour-coded nodes" width="720"/>
 </p>
