@@ -10,7 +10,7 @@
 
   <!-- Title -->
   <text x="400" y="36" text-anchor="middle" fill="#E5E7EB" font-size="15" font-weight="700">VERSION DIFF — function-level change detection</text>
-  <text x="400" y="56" text-anchor="middle" fill="#6B7280" font-size="12">v1 snapshot vs v2 snapshot &rarr; diff_status per node</text>
+  <text x="400" y="56" text-anchor="middle" fill="#6B7280" font-size="12">v1 snapshot vs v2 snapshot &#x2192; diff_status per node</text>
 
   <!-- v1 zone -->
   <rect x="30" y="75" width="340" height="275" rx="14" fill="none" stroke="#4B5563" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.5"/>
