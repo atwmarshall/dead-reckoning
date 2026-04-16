@@ -10,7 +10,7 @@
 > Navigate any codebase. Dead reckoning — finding your way through unknown territory.
 
 <p align="center">
-  <img src="docs/gifs/hero-query.gif" alt="Ask the Codebase — hybrid search with graph context" width="720"/>
+  <img src="docs/gifs/demo.gif" alt="DeadReckoning demo — hybrid search, version diffing, multi-tool chain, LangSmith trace" width="720"/>
 </p>
 
 `dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with six specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
@@ -148,24 +148,6 @@ uv run python demo/seed_demo.py --with-v2
 ---
 
 ## Demo walkthrough
-
-### Ingest v2 and diff the graph
-
-<p align="center">
-  <img src="docs/gifs/version-diff.gif" alt="Version diff — colour-coded graph nodes" width="720"/>
-</p>
-
-### Multi-tool chain — discover, fix, act
-
-<p align="center">
-  <img src="docs/gifs/multi-tool-chain.gif" alt="version_diff → generate_docstring → raise_issue" width="720"/>
-</p>
-
-### Full observability in LangSmith
-
-<p align="center">
-  <img src="docs/gifs/langsmith-trace.gif" alt="LangSmith trace waterfall" width="720"/>
-</p>
 
 > **[Full scripted walkthrough →](docs/DEMO.md)** — step-by-step instructions using the included fixture repos, no external dependencies.
 
