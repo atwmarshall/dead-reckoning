@@ -47,7 +47,7 @@ DEFINE FIELD IF NOT EXISTS file          ON `function` TYPE record<file>;
 DEFINE FIELD IF NOT EXISTS lineno        ON `function` TYPE int;
 DEFINE FIELD IF NOT EXISTS docstring     ON `function` TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS has_docstring ON `function` TYPE bool DEFAULT false;
-DEFINE FIELD IF NOT EXISTS class_name    ON `function` TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS class_name    ON `function` TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS is_method     ON `function` TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS embedding      ON `function` TYPE option<array>;
 DEFINE FIELD IF NOT EXISTS ingestion_id   ON `function` TYPE string;
@@ -57,6 +57,7 @@ DEFINE FIELD IF NOT EXISTS source            ON `function` TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS suggested_docstring ON `function` TYPE option<string>;
 
 REMOVE INDEX IF EXISTS fn_name_file_class_idx ON TABLE `function`;
+UPDATE `function` SET class_name = "" WHERE class_name IS NONE;
 DEFINE INDEX fn_name_file_class_iid_idx ON `function` FIELDS name, file, class_name, ingestion_id UNIQUE;
 
 -- CLASS: a class definition

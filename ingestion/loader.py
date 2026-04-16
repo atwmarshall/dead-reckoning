@@ -318,7 +318,7 @@ async def load_file(
 
     # Upsert functions + contains edges
     for idx, fn in enumerate(parsed["functions"]):
-        class_name = fn.get("class_name")
+        class_name = fn.get("class_name") or ""
         fnid = _function_id(path, class_name, fn["name"], ingestion_id)
         await db.query(
             """UPSERT type::record('function', $id) SET
@@ -336,7 +336,7 @@ async def load_file(
                 "docstring": fn.get("docstring"),
                 "has_docstring": bool(fn.get("docstring")),
                 "class_name": class_name,
-                "is_method": class_name is not None,
+                "is_method": bool(class_name),
                 "embedding": embeddings_map.get(idx),
                 "iid": ingestion_id,
                 "ch": fn.get("source_hash"),
@@ -436,7 +436,7 @@ async def load_calls(parsed_files: list[dict], db: AsyncSurreal, ingestion_id: s
         for parsed in parsed_files:
             file_path = parsed["path"]
             for fn in parsed.get("functions", []):
-                caller_bare = _function_id(file_path, fn.get("class_name"), fn["name"], ingestion_id)
+                caller_bare = _function_id(file_path, fn.get("class_name") or "", fn["name"], ingestion_id)
                 for callee_name in (fn.get("calls") or []):
                     for callee_bare in callee_map.get(callee_name, []):
                         eid = _edge_id(caller_bare, "calls", callee_bare)
