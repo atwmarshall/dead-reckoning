@@ -9,6 +9,9 @@
 
 > Navigate any codebase. Dead reckoning — finding your way through unknown territory.
 
+<!-- TODO: hero-query.gif — "What does the slugify function do?" → agent responds with graph context -->
+<!-- <p align="center"><img src="docs/gifs/hero-query.gif" alt="Ask the Codebase" width="720"/></p> -->
+
 `dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with six specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
 
 Built at the LangChain x SurrealDB London Hackathon, March 2026.
@@ -57,6 +60,22 @@ The query agent has six tools, each showcasing different SurrealDB capabilities:
 
 The agent chains tools together: `version_diff` finds what changed and flags undocumented functions, `generate_docstring` creates a suggestion, and `raise_issue` files it as a GitHub issue. This three-step reasoning chain is fully visible in LangSmith.
 
+### How hybrid search enriches results
+
+`hybrid_search` doesn't just return the top match — it walks the graph to add sibling functions from the same file and the call neighbourhood (callers and transitive callers), giving the agent structural context alongside semantic relevance.
+
+<p align="center">
+  <img src="docs/graph-enrichment.svg" alt="Graph enrichment — sibling context and call neighbourhood" width="720"/>
+</p>
+
+### How version diffing works
+
+Ingest a second version of the same repo and the graph diffs itself — every node gets a `diff_status` (unchanged, modified, deleted, new) at both file and function granularity.
+
+<p align="center">
+  <img src="docs/version-diff.svg" alt="Version diff — function-level change detection" width="720"/>
+</p>
+
 ---
 
 ## Tech stack
@@ -66,8 +85,7 @@ The agent chains tools together: `version_diff` finds what changed and flags und
 | Graph + vector DB | SurrealDB (cloud) | Graph traversal AND vector search AND full-text BM25 in one DB |
 | Agent orchestration | LangGraph | Stateful agent loop with native checkpointing |
 | Checkpointer | langgraph-checkpoint-surrealdb | Persists agent state to SurrealDB |
-| LLM (dev) | Ollama llama3.2:3b | Local, fast iteration, no API cost |
-| LLM (prod) | Ollama gpt-oss:20b | Higher quality responses for demo |
+| LLM | Ollama gemma4:e2b | Clean tool calling at ~7 GB, runs on a laptop. `gpt-oss:20b` as heavier fallback |
 | Embeddings | Ollama nomic-embed-text | Local embeddings, no API cost |
 | Code parsing | Python `ast` module | Built-in, no deps, reliable for Python |
 | UI | Streamlit + streamlit-agraph | Fast to build, graph viz included |
@@ -137,90 +155,17 @@ uv run python demo/seed_demo.py --with-v2
 
 ---
 
-## Demo walkthrough (3 minutes)
+## Demo walkthrough
 
-A scripted end-to-end tour you can run locally. Uses the included `tests/fixtures/sample_repo/v1` and `v2` so it works offline, no external repo required.
+<!-- TODO: version-diff.gif — v2 ingestion → DIFF MODE with coloured nodes → Resume → NORMAL MODE -->
+<!-- <p align="center"><img src="docs/gifs/version-diff.gif" alt="Version diff demo" width="720"/></p> -->
 
-> **Model note:** the default is now `gemma4:e2b` (~7 GB) — recent enough to produce clean structured tool calls and small enough to run on a laptop. Older small models such as `llama3.2:3b` will work most of the time but can occasionally emit tool calls as plain text or with malformed arguments, which trips up the multi-tool chain in step 4. If you hit that, fall back to `gpt-oss:20b`.
+<!-- TODO: multi-tool-chain.gif — "What changed between versions?" → version_diff → generate_docstring → raise_issue -->
+<!-- <p align="center"><img src="docs/gifs/multi-tool-chain.gif" alt="Multi-tool chain demo" width="720"/></p> -->
 
-### 1. Seed the v1 fixture
-
-```bash
-uv run python demo/seed_demo.py
-uv run streamlit run ui/app.py
-```
-
-Open `http://localhost:8501`. The **Knowledge Graph** tab shows `18 nodes · 25 edges` — files, functions, classes, and `calls` / `contains` / `in_repo` / `imports` edges from the v1 fixture.
-
-### 2. Query 1 — hybrid search + graph traversal
-
-Click the **Ask the Codebase** tab and send:
-
-```
-find the slugify function and what depends on it
-```
-
-The agent runs `hybrid_search` (HNSW vector + BM25 keyword fused with `search::rrf()`), then chains into `trace_impact` to walk `<-calls<-function` edges. You get back:
-
-- **Location:** `tests/fixtures/sample_repo/v1/utils.py`
-- **Direct callers:** `display_items` (in `main.py`)
-- **Transitive callers:** `run` (in `main.py` calls `display_items`, which calls `slugify`)
-
-The right-hand **Context Graph** panel shows the retrieved nodes.
-
-### 3. Ingest v2 live — checkpoint + resume
-
-In the sidebar, open **Quick select** → click **v2 — sample repo (with changes)** → click **Ingest**.
-
-A **"Repo already ingested"** dialog appears. Click **Add new version**.
-
-The ingestion pipeline parses v2, creates a snapshot, computes the diff against v1, and then **pauses at a LangGraph interrupt** — the sidebar shows *"Diff ready — review the graph, then click Resume"* with a **Resume** button.
-
-This is SurrealDB's checkpointer in action: the ingestion agent's state is persisted. Kill the process, come back, and it resumes from the same point.
-
-Click **Resume**. v2 files stream in, call edges are rebuilt, the knowledge graph updates to `34 nodes · 47 edges` with diff colours: **red** (deleted), **yellow** (modified), **purple** (new), **green** (unchanged).
-
-### 4. Query 2 — the hero multi-tool chain
-
-Back on **Ask the Codebase**, send:
-
-```
-What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.
-```
-
-The agent autonomously chains three tools:
-
-1. **`version_diff`** — reads `diff_status` from the versioned graph. Reports deleted `models.py`, modified `utils.py`, new undocumented `Item.__repr__`.
-2. **`generate_docstring`** — reads the function source from SurrealDB, sends it to the LLM, returns a Python docstring.
-3. **`raise_issue`** — opens a real GitHub issue via `gh issue create` with the suggestion.
-
-Expected output ends with a clickable **"Issue: Add missing docstring for Item.__repr__"** link.
-
-### 5. Inspect the LangSmith trace
-
-Open your LangSmith project (default: `dead-reckoning`). The most recent trace shows the full waterfall:
-
-```
-LangGraph
-├── llm (ChatOllama gpt-oss:20b)
-├── tools → version_diff
-├── llm (ChatOllama gpt-oss:20b)
-├── tools → hybrid_search
-│   ├── embed_query      (Ollama embedding call)
-│   ├── rrf_retrieve     (SurrealDB HNSW + BM25 + search::rrf)
-│   └── graph_enrich     (parent class + siblings + calls-edge traversal)
-├── tools → generate_docstring
-└── tools → raise_issue
-```
-
-Every retrieval stage, every LLM call, and the full reasoning chain is visible as nested spans. This is the observability surface for debugging hybrid search quality: when a query returns the wrong answer, you open the trace and identify which stage failed.
-
-### Troubleshooting
-
-- **Agent emits tool calls as plain text** (e.g., `{"name": "slugify", "parameters": {}}`) — your model isn't producing structured tool calls. Switch to `gpt-oss:20b` or another tool-use-capable model.
-- **Resume button doesn't appear during v2 ingestion** — pull the latest `main`; this was a race condition fixed in [#22](https://github.com/atwmarshall/dead-reckoning/pull/22).
-- **`calls` count is 0 after seeding** — pull the latest `main`; `load_calls` had a silent failure fixed in [#18](https://github.com/atwmarshall/dead-reckoning/pull/18).
-- **`gh issue create` fails** — run `gh auth login` first.
+> **[Full 3-minute scripted walkthrough →](docs/DEMO.md)**
+>
+> Hybrid search, version diffing with colour-coded graphs, and a three-tool agentic chain (version_diff → generate_docstring → raise_issue) — all using the included fixture repos, no external dependencies.
 
 ---
 
@@ -247,6 +192,10 @@ dead-reckoning/
 │   └── app.py             # Streamlit: graph viz + chat interface
 ├── demo/
 │   └── seed_demo.py       # Pre-index the demo repo cleanly
+├── docs/
+│   ├── DEMO.md            # Scripted 3-minute demo walkthrough
+│   ├── graph-enrichment.svg   # How hybrid_search enriches results
+│   └── version-diff.svg      # How version diffing works
 ├── tests/
 │   ├── test_parser.py     # Unit tests (offline, no DB)
 │   └── test_tools.py      # Integration tests (live SurrealDB + Ollama)
@@ -263,6 +212,7 @@ dead-reckoning/
 | Doc | Purpose |
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Schema design, integration points, test criteria |
+| [docs/DEMO.md](./docs/DEMO.md) | Scripted 3-minute demo walkthrough |
 
 ---
 
@@ -279,6 +229,8 @@ see .env.example
 - [langgraph-checkpoint-surrealdb](https://pypi.org/project/langgraph-checkpoint-surrealdb/) — SurrealDB checkpointer for LangGraph
 - [LangSmith](https://smith.langchain.com) — full observability of every agent step, tool call, and reasoning chain
 - [LangChain](https://langchain.com) — LLM tooling and integrations
+- [Ollama](https://ollama.com) — local LLM and embedding inference, no API keys required
+- [Streamlit](https://streamlit.io) — UI framework powering the knowledge graph viewer and chat interface
 
 ---
 
