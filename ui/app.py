@@ -51,8 +51,19 @@ DIFF_COLORS = {
 }
 DIFF_MUTED = "#AAAAAA"   # neutral gray for non-file nodes in diff mode
 
-# ── Dark theme CSS ────────────────────────────────────────────────────────
-CUSTOM_CSS = """
+# Vis.js font config — white text with a black halo so labels are readable
+# on every node colour and on either light or dark canvas backgrounds.
+GRAPH_NODE_FONT = {"color": "#FFFFFF", "size": 14, "face": "Inter, Arial, sans-serif",
+                   "strokeWidth": 4, "strokeColor": "#000000"}
+GRAPH_EDGE_FONT = {"color": "#FFFFFF", "size": 12, "face": "Inter, Arial, sans-serif",
+                   "strokeWidth": 4, "strokeColor": "#000000", "align": "middle"}
+# Default edge stroke colour. vis.js's own default is a dark grey that is
+# unreadable on the dark canvas — bumped to a light neutral so structural
+# edges are visible regardless of theme.
+EDGE_DEFAULT_COLOR = "#9CA3AF"
+
+# ── Theme-shared CSS (applies regardless of light/dark) ──────────────────
+BASE_CSS = """
 <style>
 /* Sidebar compact styling */
 section[data-testid="stSidebar"] .block-container { padding-top: 1rem; }
@@ -61,15 +72,111 @@ section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] .stCaption,
 section[data-testid="stSidebar"] .stMarkdown { font-size: 0.85rem; }
 section[data-testid="stSidebar"] h4 { font-size: 1rem; margin-bottom: 0.25rem; }
-section[data-testid="stSidebar"] .stExpander { border: 1px solid #ddd; border-radius: 6px; margin-bottom: 0.5rem; }
+section[data-testid="stSidebar"] .stExpander { border-radius: 6px; margin-bottom: 0.5rem; }
 
 /* Accent colours */
-.stButton > button[kind="primary"] { background-color: #00BFA5; border-color: #00BFA5; }
+.stButton > button[kind="primary"] { background-color: #00BFA5; border-color: #00BFA5; color: #0E1117; }
 .stButton > button[kind="primary"]:hover { background-color: #00997F; border-color: #00997F; }
 
 /* Node detail panel in sidebar — compact */
 .sidebar-detail-header { margin-bottom: 0.25rem; font-size: 0.95rem; }
 .sidebar-detail-prop { font-size: 0.82rem; margin-bottom: 0.1rem; }
+
+/* Legend / banners always use explicit dark text on their light backgrounds
+   so they stay legible regardless of the active Streamlit theme. The default
+   color on the wrapper handles the labels; the coloured circles inside have
+   their own inline `color` and must NOT be overridden by a wildcard rule. */
+.dr-legend, .dr-banner { box-sizing: border-box; max-width: 100%; }
+.dr-legend { color: #1a1a1a; }
+.dr-banner { color: inherit; }
+
+/* Hard horizontal-overflow guard: streamlit-agraph and a few other components
+   render iframes with a fixed pixel width that can push the page wider than
+   the viewport, which on wider screens cuts banners and the legend off the
+   right. Clamp everything to its parent and hide any residual overflow. */
+html, body { overflow-x: hidden !important; max-width: 100vw !important; }
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+    overflow-x: hidden !important;
+    max-width: 100vw !important;
+}
+/* Streamlit's wide layout uses 80px of block-container padding which
+   crushes the chat panel on mid-width displays. Tighten it down so the
+   content uses more of the viewport while still leaving breathing room. */
+[data-testid="stMainBlockContainer"], .block-container {
+    padding-left: 2.5rem !important;
+    padding-right: 2.5rem !important;
+    padding-top: 2rem !important;
+    max-width: 100% !important;
+}
+[data-testid="column"], [data-testid="stHorizontalBlock"] {
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+[data-testid="stCustomComponentV1"], [data-testid="stCustomComponentV1"] iframe {
+    width: 100% !important; max-width: 100% !important;
+}
+iframe { max-width: 100% !important; }
+[data-testid="element-container"] { max-width: 100% !important; }
+
+/* High-contrast text in the default (dark) theme: Streamlit's defaults for
+   captions, labels, placeholder text and helper copy are too muted to read
+   on the #0E1117 background, especially when screen-recording. */
+[data-testid="stAppViewContainer"] {
+    color: #FAFAFA;
+}
+[data-testid="stCaptionContainer"],
+.stCaption, small,
+[data-testid="stMarkdownContainer"] small {
+    color: #C9C9C9 !important;
+}
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+label p { color: #FAFAFA !important; }
+input::placeholder, textarea::placeholder { color: #8A8A8A !important; opacity: 1; }
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] li,
+section[data-testid="stSidebar"] .stMarkdown,
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+    color: #EAEAEA;
+}
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+section[data-testid="stSidebar"] .stCaption {
+    color: #BFBFBF !important;
+}
+/* Tabs / chat */
+.stTabs button p { color: #EAEAEA; }
+.stChatMessage [data-testid="stMarkdownContainer"] { color: #FAFAFA; }
+</style>
+"""
+
+# ── Light-theme override CSS (injected when user picks Light) ─────────────
+# Streamlit's base theme is dark by default; this override flips the core
+# colours back to a light palette via CSS variables, with a few component
+# selectors for elements that don't follow the variables cleanly.
+LIGHT_OVERRIDE_CSS = """
+<style>
+:root, [data-theme="dark"] {
+    --background-color: #FFFFFF;
+    --secondary-background-color: #F5F5F5;
+    --text-color: #1a1a1a;
+}
+html, body, .stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stHeader"] { background-color: #FFFFFF !important; color: #1a1a1a !important; }
+section[data-testid="stSidebar"] { background-color: #F5F5F5 !important; }
+section[data-testid="stSidebar"] * { color: #1a1a1a !important; }
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] span:not([style*="color"]) { color: #1a1a1a !important; }
+.stTabs [data-baseweb="tab-list"] { background-color: #F5F5F5 !important; }
+section[data-testid="stSidebar"] .stExpander { border: 1px solid #DDD; }
+section[data-testid="stSidebar"] details,
+section[data-testid="stSidebar"] details summary,
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary,
+section[data-testid="stSidebar"] [data-testid="stExpander"] details {
+    background-color: #FFFFFF !important;
+}
+.stTextInput input, .stNumberInput input { background-color: #FFFFFF !important; color: #1a1a1a !important; }
 </style>
 """
 
@@ -366,7 +473,7 @@ def _build_agraph(
             label = str(row.get("name", ""))
             if nid and nid not in seen:
                 color = DIFF_MUTED if is_diff_mode else REPO_COLOR
-                nodes.append(Node(id=nid, label=label, color=color, size=35))
+                nodes.append(Node(id=nid, label=label, color=color, size=35, font=GRAPH_NODE_FONT))
                 seen.add(nid)
 
     if show_folders:
@@ -375,7 +482,7 @@ def _build_agraph(
             label = str(row.get("path", "")).split("/")[-1] or str(row.get("path", ""))
             if nid and nid not in seen:
                 color = DIFF_MUTED if is_diff_mode else FOLDER_COLOR
-                nodes.append(Node(id=nid, label=label, color=color, size=25))
+                nodes.append(Node(id=nid, label=label, color=color, size=25, font=GRAPH_NODE_FONT))
                 seen.add(nid)
 
     if show_files:
@@ -390,7 +497,7 @@ def _build_agraph(
             else:
                 color = FILE_COLOR
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=color, size=20))
+                nodes.append(Node(id=nid, label=label, color=color, size=20, font=GRAPH_NODE_FONT))
                 seen.add(nid)
 
     if show_functions:
@@ -409,7 +516,7 @@ def _build_agraph(
                 suggested = (row.get("suggested_docstring") or "").strip()
                 tooltip_body = doc or (f"(suggested) {suggested}" if suggested else "")
                 title = f"{label}\n{tooltip_body}" if tooltip_body else label
-                nodes.append(Node(id=nid, label=label, color=color, size=12, title=title))
+                nodes.append(Node(id=nid, label=label, color=color, size=12, title=title, font=GRAPH_NODE_FONT))
                 seen.add(nid)
 
     if show_classes:
@@ -418,7 +525,7 @@ def _build_agraph(
             label = str(row.get("name", ""))
             if nid and nid not in seen:
                 color = DIFF_MUTED if is_diff_mode else CLASS_COLOR
-                nodes.append(Node(id=nid, label=label, color=color, size=15))
+                nodes.append(Node(id=nid, label=label, color=color, size=15, font=GRAPH_NODE_FONT))
                 seen.add(nid)
 
     structural_sources = [
@@ -440,7 +547,8 @@ def _build_agraph(
                 src = str(row.get("in", ""))
                 dst = str(row.get("out", ""))
                 if src and dst and src in seen and dst in seen:
-                    edges.append(Edge(source=src, target=dst, label=label))
+                    edges.append(Edge(source=src, target=dst, label=label,
+                                      color=EDGE_DEFAULT_COLOR, font=GRAPH_EDGE_FONT))
 
     if show_calls:
         for raw, label in call_sources:
@@ -450,8 +558,9 @@ def _build_agraph(
                 src = str(row.get("in", ""))
                 dst = str(row.get("out", ""))
                 if src and dst and src in seen and dst in seen:
-                    color = CALLS_EDGE_COLOR if label == "calls" else None
-                    edges.append(Edge(source=src, target=dst, label=label, color=color))
+                    color = CALLS_EDGE_COLOR if label == "calls" else EDGE_DEFAULT_COLOR
+                    edges.append(Edge(source=src, target=dst, label=label,
+                                      color=color, font=GRAPH_EDGE_FONT))
 
     return nodes, edges
 
@@ -682,7 +791,7 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
         label = str(row.get("name", ""))
         if nid and nid not in seen:
             nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12,
-                              font={"color": "#FFD700"}))
+                              font=GRAPH_NODE_FONT))
             seen.add(nid)
 
     for row in class_rows:
@@ -690,7 +799,7 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
         label = str(row.get("name", ""))
         if nid and nid not in seen:
             nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15,
-                              font={"color": "#FFD700"}))
+                              font=GRAPH_NODE_FONT))
             seen.add(nid)
 
     if one_hop:
@@ -698,20 +807,20 @@ async def _build_context_graph_async(refs: list[dict], one_hop: bool) -> tuple[l
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12))
+                nodes.append(Node(id=nid, label=label, color=FUNC_COLOR, size=12, font=GRAPH_NODE_FONT))
                 seen.add(nid)
         for row in hop_class_rows:
             nid = str(row.get("id", ""))
             label = str(row.get("name", ""))
             if nid and nid not in seen:
-                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15))
+                nodes.append(Node(id=nid, label=label, color=CLASS_COLOR, size=15, font=GRAPH_NODE_FONT))
                 seen.add(nid)
 
     for row in contains_rows:
         src = str(row.get("in", ""))
         dst = str(row.get("out", ""))
         if src and dst and src in seen and dst in seen:
-            edges.append(Edge(source=src, target=dst))
+            edges.append(Edge(source=src, target=dst, color=EDGE_DEFAULT_COLOR, font=GRAPH_EDGE_FONT))
 
     names_list = ", ".join(f"'{n}'" for n in names)
     paths_list = ", ".join(f"'{p}'" for p in file_paths)
@@ -779,6 +888,7 @@ def _init_state() -> None:
         "selected_node_id": None,
         "selected_node_detail": None,
         "ingest_preset_disk_path": None,
+        "theme": "dark",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -944,8 +1054,10 @@ def _get_ingest_status() -> str:
 # ── App ────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Dead Reckoning", layout="wide")
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 _init_state()
+st.markdown(BASE_CSS, unsafe_allow_html=True)
+if st.session_state.theme == "light":
+    st.markdown(LIGHT_OVERRIDE_CSS, unsafe_allow_html=True)
 
 
 # ── Conflict dialog ─────────────────────────────────────────────────────────
@@ -1249,6 +1361,15 @@ with st.sidebar:
 
     # ── Expander 4: Settings ────────────────────────────────────────────
     with st.expander("Settings", expanded=False):
+        # Theme toggle — single button that flips between sun (currently dark
+        # → click to switch to light) and moon (currently light → click for dark)
+        _is_dark = st.session_state.theme == "dark"
+        _theme_label = "☀️  Switch to Light" if _is_dark else "🌙  Switch to Dark"
+        if st.button(_theme_label, key="theme_toggle_btn", use_container_width=True):
+            st.session_state.theme = "light" if _is_dark else "dark"
+            st.rerun()
+        st.divider()
+
         # Refresh button
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -1389,14 +1510,14 @@ with tab_graph:
     is_diff = bool(st.session_state.diff_highlights)
     if is_diff:
         st.markdown(
-            '<div style="background:#FFEBEE;border:2px solid #E53935;border-radius:8px;'
+            '<div class="dr-banner" style="background:#FFEBEE;border:2px solid #E53935;border-radius:8px;'
             'padding:0.6rem 1.2rem;font-size:1.25rem;font-weight:700;color:#B71C1C;'
             'margin-bottom:0.75rem">&#9689; DIFF MODE — reviewing changes between versions</div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            '<div style="background:#E3F2FD;border:2px solid #42A5F5;border-radius:8px;'
+            '<div class="dr-banner" style="background:#E3F2FD;border:2px solid #42A5F5;border-radius:8px;'
             'padding:0.6rem 1.2rem;font-size:1.25rem;font-weight:700;color:#1565C0;'
             'margin-bottom:0.75rem">&#9679; NORMAL MODE</div>',
             unsafe_allow_html=True,
@@ -1415,7 +1536,7 @@ with tab_graph:
                 st.caption(f"{len(g_nodes)} nodes · {len(g_edges)} edges")
                 freeze = st.checkbox("Freeze layout", value=st.session_state.graph_frozen, key="graph_frozen")
                 cfg = Config(
-                    width="100%", height=700,
+                    width="100%", height=620,
                     directed=True, physics=not freeze, hierarchical=False,
                 )
                 clicked_node = agraph(nodes=g_nodes, edges=g_edges, config=cfg)
@@ -1543,36 +1664,36 @@ with tab_chat:
 _is_diff_legend = bool(st.session_state.diff_highlights)
 if _is_diff_legend:
     st.markdown(
-        '<div style="background:#FFF8E1;border:2px solid #FDD835;border-radius:8px;'
-        'padding:0.75rem 1.5rem;margin-top:0.5rem">'
-        '<span style="font-size:0.85rem;color:#666;font-weight:600;margin-right:1.5rem">DIFF</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        '<div class="dr-legend" style="background:#FFF8E1;border:2px solid #FDD835;border-radius:8px;'
+        'padding:0.75rem 1.5rem;margin-top:0.5rem;color:#1a1a1a">'
+        '<span style="font-size:0.85rem;color:#444;font-weight:700;margin-right:1.5rem">DIFF</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem;color:#1a1a1a">'
         f'<span style="color:{DIFF_COLORS["green"]}">&#11044;</span> Unchanged</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem;color:#1a1a1a">'
         f'<span style="color:{DIFF_COLORS["yellow"]}">&#11044;</span> Modified</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem;color:#1a1a1a">'
         f'<span style="color:{DIFF_COLORS["red"]}">&#11044;</span> Deleted</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem;color:#1a1a1a">'
         f'<span style="color:{DIFF_COLORS["added"]}">&#11044;</span> Added</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:2rem;color:#1a1a1a">'
         f'<span style="color:{DIFF_MUTED}">&#11044;</span> Other nodes (muted)</span>'
         '</div>',
         unsafe_allow_html=True,
     )
 else:
     st.markdown(
-        '<div style="background:#F5F5F5;border:1px solid #E0E0E0;border-radius:8px;'
-        'padding:0.75rem 1.5rem;margin-top:0.5rem">'
-        '<span style="font-size:0.85rem;color:#666;font-weight:600;margin-right:1.5rem">NODE TYPES</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        '<div class="dr-legend" style="background:#F5F5F5;border:1px solid #BDBDBD;border-radius:8px;'
+        'padding:0.75rem 1.5rem;margin-top:0.5rem;color:#1a1a1a">'
+        '<span style="font-size:0.85rem;color:#444;font-weight:700;margin-right:1.5rem">NODE TYPES</span>'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem;color:#1a1a1a">'
         f'<span style="color:{REPO_COLOR}">&#11044;</span> Repo</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem;color:#1a1a1a">'
         f'<span style="color:{FOLDER_COLOR}">&#11044;</span> Folder</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem;color:#1a1a1a">'
         f'<span style="color:{FILE_COLOR}">&#11044;</span> File</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem;color:#1a1a1a">'
         f'<span style="color:{FUNC_COLOR}">&#11044;</span> Function</span>'
-        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem">'
+        f'<span style="font-size:1.05rem;font-weight:600;margin-right:1.5rem;color:#1a1a1a">'
         f'<span style="color:{CLASS_COLOR}">&#11044;</span> Class</span>'
         '</div>',
         unsafe_allow_html=True,
