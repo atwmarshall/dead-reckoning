@@ -8,7 +8,7 @@
       <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#9CA3AF"/>
     </marker>
     <marker id="arrow-call" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#F59E0B"/>
+      <path d="M 0 0 L 10 3.5 L 0 7 z" fill="#FF6D00"/>
     </marker>
   </defs>
 
@@ -16,15 +16,15 @@
   <rect width="800" height="520" rx="12" fill="#0E1117"/>
 
   <!-- Sibling context zone -->
-  <rect x="168" y="52" width="305" height="310" rx="16" fill="none" stroke="#3B82F6" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.5"/>
-  <text x="320" y="78" text-anchor="middle" fill="#3B82F6" font-size="12" font-weight="600" opacity="0.8">SIBLING CONTEXT</text>
+  <rect x="168" y="52" width="305" height="310" rx="16" fill="none" stroke="#42A5F5" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.5"/>
+  <text x="320" y="78" text-anchor="middle" fill="#42A5F5" font-size="12" font-weight="600" opacity="0.8">SIBLING CONTEXT</text>
 
   <!-- Call neighbourhood zone -->
-  <rect x="508" y="120" width="272" height="240" rx="16" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.5"/>
-  <text x="644" y="146" text-anchor="middle" fill="#F59E0B" font-size="12" font-weight="600" opacity="0.8">CALL NEIGHBOURHOOD</text>
+  <rect x="508" y="120" width="272" height="240" rx="16" fill="none" stroke="#FF6D00" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.5"/>
+  <text x="644" y="146" text-anchor="middle" fill="#FF6D00" font-size="12" font-weight="600" opacity="0.8">CALL NEIGHBOURHOOD</text>
 
   <!-- File node: utils.py -->
-  <circle cx="100" cy="230" r="28" fill="#3B82F6" opacity="0.9"/>
+  <circle cx="100" cy="230" r="28" fill="#42A5F5" opacity="0.9"/>
   <text x="100" y="235" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">utils.py</text>
   <text x="100" y="275" text-anchor="middle" fill="#64748B" font-size="11">file</text>
 
@@ -38,7 +38,7 @@
   <text x="175" y="224" text-anchor="middle" fill="#6B7280" font-size="10" font-style="italic">contains</text>
 
   <!-- Function: format_title (sibling) -->
-  <circle cx="258" cy="145" r="18" fill="#8B5CF6" opacity="0.7"/>
+  <circle cx="258" cy="145" r="18" fill="#AB47BC" opacity="0.7"/>
   <text x="258" y="150" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">format_title</text>
   <text x="258" y="120" text-anchor="middle" fill="#64748B" font-size="10">sibling</text>
 
@@ -52,43 +52,43 @@
   <text x="258" y="263" text-anchor="middle" fill="#00BFA5" font-size="11" font-weight="600">⬆ search result</text>
 
   <!-- Function: paginate (sibling) -->
-  <circle cx="258" cy="315" r="18" fill="#8B5CF6" opacity="0.7"/>
+  <circle cx="258" cy="315" r="18" fill="#AB47BC" opacity="0.7"/>
   <text x="258" y="320" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">paginate</text>
   <text x="258" y="345" text-anchor="middle" fill="#64748B" font-size="10">sibling</text>
 
   <!-- Function: flatten (sibling) -->
-  <circle cx="400" cy="145" r="18" fill="#8B5CF6" opacity="0.7"/>
+  <circle cx="400" cy="145" r="18" fill="#AB47BC" opacity="0.7"/>
   <text x="400" y="150" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">flatten</text>
   <text x="400" y="120" text-anchor="middle" fill="#64748B" font-size="10">sibling</text>
 
   <!-- Calls edge: display_items → slugify -->
-  <line x1="540" y1="210" x2="282" y2="225" stroke="#F59E0B" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow-call)"/>
-  <text x="420" y="205" text-anchor="middle" fill="#F59E0B" font-size="11" font-weight="500">calls</text>
+  <line x1="540" y1="210" x2="282" y2="225" stroke="#FF6D00" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow-call)"/>
+  <text x="420" y="205" text-anchor="middle" fill="#FF6D00" font-size="11" font-weight="500">calls</text>
 
   <!-- Function: display_items (caller) -->
-  <circle cx="580" cy="210" r="18" fill="#8B5CF6" opacity="0.5"/>
-  <circle cx="580" cy="210" r="18" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <circle cx="580" cy="210" r="18" fill="#AB47BC" opacity="0.5"/>
+  <circle cx="580" cy="210" r="18" fill="none" stroke="#FF6D00" stroke-width="1.5" stroke-dasharray="3 2"/>
   <text x="580" y="215" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">display_items</text>
-  <text x="580" y="185" text-anchor="middle" fill="#F59E0B" font-size="10">caller</text>
+  <text x="580" y="185" text-anchor="middle" fill="#FF6D00" font-size="10">caller</text>
 
   <!-- Calls edge: run → display_items -->
-  <line x1="700" y1="290" x2="596" y2="224" stroke="#F59E0B" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow-call)"/>
-  <text x="660" y="248" text-anchor="middle" fill="#F59E0B" font-size="11" font-weight="500">calls</text>
+  <line x1="700" y1="290" x2="596" y2="224" stroke="#FF6D00" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow-call)"/>
+  <text x="660" y="248" text-anchor="middle" fill="#FF6D00" font-size="11" font-weight="500">calls</text>
 
   <!-- Function: run (caller of caller) -->
-  <circle cx="700" cy="310" r="18" fill="#8B5CF6" opacity="0.4"/>
-  <circle cx="700" cy="310" r="18" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <circle cx="700" cy="310" r="18" fill="#AB47BC" opacity="0.4"/>
+  <circle cx="700" cy="310" r="18" fill="none" stroke="#FF6D00" stroke-width="1.5" stroke-dasharray="3 2"/>
   <text x="700" y="315" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">run</text>
-  <text x="700" y="340" text-anchor="middle" fill="#F59E0B" font-size="10">transitive caller</text>
+  <text x="700" y="340" text-anchor="middle" fill="#FF6D00" font-size="10">transitive caller</text>
 
   <!-- Legend -->
   <rect x="30" y="420" width="740" height="75" rx="10" fill="#1B1F27"/>
   <text x="55" y="445" fill="#9CA3AF" font-size="11" font-weight="600">LEGEND</text>
 
-  <circle cx="55" cy="468" r="8" fill="#3B82F6"/>
+  <circle cx="55" cy="468" r="8" fill="#42A5F5"/>
   <text x="70" y="472" fill="#D1D5DB" font-size="11">File</text>
 
-  <circle cx="135" cy="468" r="8" fill="#8B5CF6"/>
+  <circle cx="135" cy="468" r="8" fill="#AB47BC"/>
   <text x="150" y="472" fill="#D1D5DB" font-size="11">Function</text>
 
   <circle cx="240" cy="468" r="8" fill="#00BFA5"/>
@@ -97,9 +97,9 @@
   <line x1="370" y1="468" x2="400" y2="468" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
   <text x="410" y="472" fill="#D1D5DB" font-size="11">contains</text>
 
-  <line x1="490" y1="468" x2="520" y2="468" stroke="#F59E0B" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow-call)"/>
+  <line x1="490" y1="468" x2="520" y2="468" stroke="#FF6D00" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arrow-call)"/>
   <text x="530" y="472" fill="#D1D5DB" font-size="11">calls</text>
 
-  <rect x="600" y="458" width="50" height="20" rx="6" fill="none" stroke="#3B82F6" stroke-width="1" stroke-dasharray="4 3" opacity="0.5"/>
+  <rect x="600" y="458" width="50" height="20" rx="6" fill="none" stroke="#42A5F5" stroke-width="1" stroke-dasharray="4 3" opacity="0.5"/>
   <text x="658" y="472" fill="#D1D5DB" font-size="11">context zone</text>
 </svg>
