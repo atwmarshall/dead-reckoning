@@ -344,7 +344,7 @@ def version_diff(module: str = "") -> str:
     Use when asked what changed, what's new, or what was deleted."""
     # Auto-discover versions from ingestion table
     ingestions = _get_rows(asyncio.run(_query(
-        "SELECT * FROM ingestion ORDER BY created_at DESC LIMIT 5"
+        "SELECT * FROM ingestion ORDER BY ingested_at DESC LIMIT 5"
     )))
 
     version_header = ""
@@ -392,6 +392,27 @@ def version_diff(module: str = "") -> str:
         {"module": module} if module else {},
     )))
 
+    # The diff engine only marks v1 entities. Functions in brand-new v2 files
+    # (like api.py) have diff_status=None. Detect them by comparing the two
+    # most recent ingestions: any function name in the latest that wasn't in the
+    # previous is "added".
+    if len(ingestions) >= 2:
+        latest_iid = str(ingestions[0].get("id", ""))
+        prev_iid = str(ingestions[1].get("id", ""))
+        latest_fns = _get_rows(asyncio.run(_query(
+            "SELECT name, file.path AS path, has_docstring FROM `function` WHERE ingestion_id = $iid",
+            {"iid": latest_iid},
+        )))
+        prev_names = {r.get("name") for r in _get_rows(asyncio.run(_query(
+            "SELECT name FROM `function` WHERE ingestion_id = $iid",
+            {"iid": prev_iid},
+        )))}
+        for row in latest_fns:
+            name = row.get("name", "")
+            if name not in prev_names:
+                row["diff_status"] = "added"
+                fn_rows.append(row)
+
     if not file_rows and not fn_rows:
         return version_header + "No version diff data found. Ingest two versions to see what changed."
 
@@ -403,7 +424,7 @@ def version_diff(module: str = "") -> str:
 
     fns_by_status: dict[str, list[str]] = {"red": [], "yellow": [], "green": [], "added": []}
     for row in fn_rows:
-        s = row.get("diff_status", "")
+        s = row.get("diff_status") or "added"
         if s in fns_by_status:
             label = f"{row.get('name', '?')} in {row.get('path', '?')}"
             if row.get("has_docstring") is False:
