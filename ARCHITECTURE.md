@@ -407,8 +407,8 @@ flowchart TD
     Q[User query string] --> EX[stopword filter\nextract keyword terms]
     Q --> EMB[OllamaEmbeddings\nnomic-embed-text 768-dim]
 
-    EX -->|keyword| FT[SurrealQL: BM25 full-text\nname @0@ keyword OR docstring @1@ keyword\nOR suggested_docstring @2@ keyword]
-    EMB -->|embedding vector| VS[SurrealQL: HNSW vector\nembedding less|5,100| greater $vec]
+    EX -->|keyword| FT["SurrealQL: BM25 full-text\nname, docstring, suggested_docstring\nmatched via BM25 analyzers"]
+    EMB -->|embedding vector| VS["SurrealQL: HNSW vector\nembedding ‹5,100› $vec"]
 
     FT -->|ranked list| RRF[search::rrf\nNative SurrealDB fusion\nk=5, window=60]
     VS -->|ranked list| RRF
