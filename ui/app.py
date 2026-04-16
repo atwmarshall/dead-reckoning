@@ -1241,13 +1241,6 @@ with st.sidebar:
         else:
             st.caption("Ready. Enter a repo path and click **Ingest**.")
 
-        # Auto-refresh while ingestion is active so background state changes
-        # (progress updates, interrupt flip to awaiting_resume, completion)
-        # surface in the UI without the user needing to click anything.
-        if status in ("running", "awaiting_resume", "stopping"):
-            time.sleep(1)
-            st.rerun()
-
         # ── Diff log ───────────────────────────────────────────────────
         log = list(st.session_state.diff_status_log)
         if log:
@@ -1481,9 +1474,15 @@ def _do_graph_refresh():
     _alive = thread is not None and thread.is_alive()
     p = st.session_state.ingest_progress
 
-    # While re-ingesting with a diff base, pin the graph to the prev version
-    diff_base_iid = p.get("diff_base_iid") if _alive else None
-    iid = diff_base_iid or st.session_state.get("selected_ingestion_id") or None
+    # While re-ingesting with a diff base, pin the graph to the prev version.
+    # After completion (status=done), pin to the newly created version so we
+    # don't show both v1 and v2 entities.
+    if _alive:
+        iid = p.get("diff_base_iid") or st.session_state.get("selected_ingestion_id")
+    elif p.get("status") == "done" and p.get("ingestion_id"):
+        iid = p["ingestion_id"]
+    else:
+        iid = st.session_state.get("selected_ingestion_id")
 
     try:
         data = _fetch_graph_data(iid)
@@ -1698,3 +1697,11 @@ else:
         '</div>',
         unsafe_allow_html=True,
     )
+
+# ── Auto-refresh (runs AFTER all UI elements are rendered) ────────────────
+# Placed at script end so the banner, graph, and sidebar all render with
+# current state before the sleep+rerun cycle restarts the script.
+_ingest_status_final = _get_ingest_status()
+if _ingest_status_final in ("running", "awaiting_resume", "stopping"):
+    time.sleep(1)
+    st.rerun()
