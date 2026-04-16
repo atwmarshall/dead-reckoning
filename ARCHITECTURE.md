@@ -75,7 +75,7 @@ erDiagram
         string source "optional, full function text"
         string suggested_docstring "optional, LLM-generated"
     }
-    classdef {
+    cls {
         string id PK "class:md5hash"
         string name
         record file FK
@@ -101,10 +101,10 @@ erDiagram
     repo ||--o{ file : "in_repo (edge)"
     folder ||--o{ file : "in_folder (edge)"
     file ||--o{ function : "contains (edge)"
-    file ||--o{ classdef : "contains (edge)"
+    file ||--o{ cls : "contains (edge)"
     file ||--o{ file : "imports (edge)"
     function ||--o{ function : "calls (edge)"
-    classdef ||--o{ classdef : "inherits (edge)"
+    cls ||--o{ cls : "inherits (edge)"
     checkpoint ||--o{ write : "has writes"
 ```
 
