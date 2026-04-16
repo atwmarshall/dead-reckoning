@@ -23,7 +23,7 @@ flowchart TD
     IA -->|checkpoint read/write| SDB
 
     QA -->|LangSmith traces| LS[LangSmith\nObservability]
-    Tools -->|@traceable spans| LS
+    Tools -->|traceable spans| LS
 
     SDB -->|graph data for visualisation| UI[ui/app.py\nStreamlit + streamlit-agraph]
     QA -->|chat responses| UI
@@ -75,7 +75,7 @@ erDiagram
         string source "optional, full function text"
         string suggested_docstring "optional, LLM-generated"
     }
-    class {
+    classdef {
         string id PK "class:md5hash"
         string name
         record file FK
@@ -101,10 +101,10 @@ erDiagram
     repo ||--o{ file : "in_repo (edge)"
     folder ||--o{ file : "in_folder (edge)"
     file ||--o{ function : "contains (edge)"
-    file ||--o{ class : "contains (edge)"
+    file ||--o{ classdef : "contains (edge)"
     file ||--o{ file : "imports (edge)"
     function ||--o{ function : "calls (edge)"
-    class ||--o{ class : "inherits (edge)"
+    classdef ||--o{ classdef : "inherits (edge)"
     checkpoint ||--o{ write : "has writes"
 ```
 
@@ -477,7 +477,7 @@ query_config  = {"configurable": {"thread_id": f"query-{repo_name}"}}
 ```python
 # Model selected at runtime via env var — no code changes to switch
 llm = ChatOllama(
-    model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),  # swap for gpt-oss:20b at demo
+    model=os.getenv("OLLAMA_MODEL", "gemma4:e2b"),  # gpt-oss:20b as heavier fallback
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
 )
 llm_with_tools = llm.bind_tools([

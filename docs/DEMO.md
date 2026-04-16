@@ -18,7 +18,7 @@ Open `http://localhost:8501`. The **Knowledge Graph** tab shows `18 nodes · 25 
 Click the **Ask the Codebase** tab and send:
 
 ```
-find the slugify function and what depends on it
+tell me about the slugify function
 ```
 
 The agent runs `hybrid_search` (HNSW vector + BM25 keyword fused with `search::rrf()`), then chains into `trace_impact` to walk `<-calls<-function` edges. You get back:
@@ -46,7 +46,7 @@ Click **Resume**. v2 files stream in, call edges are rebuilt, the knowledge grap
 Back on **Ask the Codebase**, send:
 
 ```
-What changed between versions? If anything new is undocumented, suggest a docstring and raise a GitHub issue.
+what changed between versions - any issues? and action them
 ```
 
 The agent autonomously chains three tools:
