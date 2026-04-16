@@ -9,8 +9,9 @@
 
 > Navigate any codebase. Dead reckoning — finding your way through unknown territory.
 
-<!-- TODO: hero-query.gif — "What does the slugify function do?" → agent responds with graph context -->
-<!-- <p align="center"><img src="docs/gifs/hero-query.gif" alt="Ask the Codebase" width="720"/></p> -->
+<p align="center">
+  <img src="docs/gifs/hero-query.gif" alt="Ask the Codebase — hybrid search with graph context" width="720"/>
+</p>
 
 `dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with six specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
 
@@ -33,15 +34,6 @@ Built at the LangChain x SurrealDB London Hackathon, March 2026.
 | **SurrealDB** | Multi-model database | Knowledge graph (nodes + edges), vector search (HNSW), full-text search (BM25), native RRF fusion, agent checkpoint state, ingestion history, version snapshots — all in one instance |
 | **LangGraph** | Agent orchestration | Stateful agent loop with conditional tool routing, resumable ingestion pipeline with per-file checkpoints, thread-based conversation persistence |
 | **LangSmith** | Observability | Every agent step traced — tool calls, graph traversals, multi-tool reasoning chains all visible as nested spans |
-
-### The demo moment
-
-```
-Agent is indexing. Kill it at file 47 of 100.
-Restart with the same thread_id.
-It resumes from file 47 — not file 1.
-The 46 nodes already built are still in the graph.
-```
 
 ---
 
@@ -157,15 +149,25 @@ uv run python demo/seed_demo.py --with-v2
 
 ## Demo walkthrough
 
-<!-- TODO: version-diff.gif — v2 ingestion → DIFF MODE with coloured nodes → Resume → NORMAL MODE -->
-<!-- <p align="center"><img src="docs/gifs/version-diff.gif" alt="Version diff demo" width="720"/></p> -->
+### Ingest v2 and diff the graph
 
-<!-- TODO: multi-tool-chain.gif — "What changed between versions?" → version_diff → generate_docstring → raise_issue -->
-<!-- <p align="center"><img src="docs/gifs/multi-tool-chain.gif" alt="Multi-tool chain demo" width="720"/></p> -->
+<p align="center">
+  <img src="docs/gifs/version-diff.gif" alt="Version diff — colour-coded graph nodes" width="720"/>
+</p>
 
-> **[Full 3-minute scripted walkthrough →](docs/DEMO.md)**
->
-> Hybrid search, version diffing with colour-coded graphs, and a three-tool agentic chain (version_diff → generate_docstring → raise_issue) — all using the included fixture repos, no external dependencies.
+### Multi-tool chain — discover, fix, act
+
+<p align="center">
+  <img src="docs/gifs/multi-tool-chain.gif" alt="version_diff → generate_docstring → raise_issue" width="720"/>
+</p>
+
+### Full observability in LangSmith
+
+<p align="center">
+  <img src="docs/gifs/langsmith-trace.gif" alt="LangSmith trace waterfall" width="720"/>
+</p>
+
+> **[Full scripted walkthrough →](docs/DEMO.md)** — step-by-step instructions using the included fixture repos, no external dependencies.
 
 ---
 
