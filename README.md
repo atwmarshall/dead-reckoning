@@ -1,5 +1,7 @@
 # DeadReckoning
 
+**Winner** at the LangChain x SurrealDB London Hackathon, March 2026. Built by Archie Marshall and [Júlia Sala-Bayo](https://github.com/juliasalabayo). Write-up on the [SurrealDB blog](https://surrealdb.com/blog/hybrid-search-inside-surrealdb).
+
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![SurrealDB](https://img.shields.io/badge/SurrealDB-FF00A0?logo=surrealdb&logoColor=white)](https://surrealdb.com)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1C3C3C?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
@@ -14,8 +16,6 @@
 </p>
 
 `dead-reckoning` parses any Python codebase into a **SurrealDB knowledge graph** — files, functions, classes, imports, and call relationships all become queryable nodes and edges. A **LangGraph agent** with six specialised tools navigates the graph to answer architecture questions in plain English. Every tool call, graph traversal, and reasoning step is traced in **LangSmith**. Ingestion is **checkpointed** — kill it mid-run, restart, and it resumes exactly where it stopped.
-
-Built at the LangChain x SurrealDB London Hackathon, March 2026.
 
 ---
 
